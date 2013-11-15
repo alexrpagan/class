@@ -2,7 +2,6 @@ import os
 import argparse
 import sys
 import glob
-import multiprocessing
 
 from Bio.Blast.Applications import NcbiblastnCommandline
 from multiprocessing.pool import ThreadPool
@@ -10,14 +9,14 @@ from utils import validdir
 
 QUERYFMT = "*.txt"
 CMD = "blastn"
-OUTFMT = 8
+OUTFMT = 7
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("querydir", help="path to directory of query files", type=str)
     parser.add_argument("dbdir",    help="path to directory of databases", type=str)
     parser.add_argument("outdir",   help="path to directory of output files", type=str)
-    parser.add_argument("-e", "--evalue", help="evalue for BLAST", type=float, default=1e-5)
+    parser.add_argument("-e", "--evalue", help="evalue for BLAST", type=float, default=1e-1)
     parser.add_argument("-t", "--title", help="base title for outfile", type=str, default="out")
     args = parser.parse_args()
 
@@ -50,10 +49,21 @@ def main():
                 , out=os.path.join(args.outdir, outfilename))
             jobs.append(job)
 
-    pool = ThreadPool(multiprocessing.cpu_count())
-    pool.map(lambda x: jobs[x](), range(len(jobs)))
+    pool = ThreadPool()
+    pool.map(get_job_executor(jobs), range(len(jobs)))
 
     return 0
+
+def get_job_executor(jobs):
+    def do_job(i):
+        job = jobs[i]
+        outfile = job.out
+        job()
+        process_output_file(i, outfile)
+    return do_job
+
+def process_output_file(job_number, filepath):
+    print "Processed output file for job %d" % job_number
 
 def get_query_files(querydir):
     return glob.glob(os.path.join(querydir, QUERYFMT))
