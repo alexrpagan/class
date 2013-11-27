@@ -32,14 +32,14 @@ gprof:
 .PHONY: all
 
 OBJECTS=$(VCFLIB_ROOT)/src/split.o \
-		$(VCFLIB_ROOT)/tabixpp/tabix.o \
-		$(VCFLIB_ROOT)/tabixpp/bgzf.o \
-		$(VCFLIB_ROOT)/smithwaterman/SmithWatermanGotoh.o \
-		$(VCFLIB_ROOT)/smithwaterman/disorder.c \
-		$(VCFLIB_ROOT)/smithwaterman/LeftAlign.o \
-		$(VCFLIB_ROOT)/smithwaterman/Repeats.o \
-		$(VCFLIB_ROOT)/smithwaterman/IndelAllele.o \
-		$(VCFLIB_ROOT)/src/Variant.o \
+	$(VCFLIB_ROOT)/tabixpp/tabix.o \
+	$(VCFLIB_ROOT)/tabixpp/bgzf.o \
+	$(VCFLIB_ROOT)/smithwaterman/SmithWatermanGotoh.o \
+	$(VCFLIB_ROOT)/smithwaterman/disorder.c \
+	$(VCFLIB_ROOT)/smithwaterman/LeftAlign.o \
+	$(VCFLIB_ROOT)/smithwaterman/Repeats.o \
+	$(VCFLIB_ROOT)/smithwaterman/IndelAllele.o \
+	$(VCFLIB_ROOT)/src/Variant.o \
 
 $(VCFLIB_ROOT)/src/split.o:
 $(VCFLIB_ROOT)/src/Variant.o:
