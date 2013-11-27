@@ -8,9 +8,12 @@ CFLAGS=-O3 -D_FILE_OFFSET_BITS=64
 
 SOURCE_ROOT=src/cpp
 VCFLIB_ROOT=vcflib
+EWAH_ROOT=EWAHBoolArray
 
 LIBS = -L./ -L$(VCFLIB_ROOT)/tabixpp/ -ltabix -lz -lm
-INCLUDE = -I$(VCFLIB_ROOT)/src -I$(VCFLIB_ROOT)/
+INCLUDE = -I$(VCFLIB_ROOT)/src -I$(VCFLIB_ROOT)/ -I$(EWAH_ROOT)/headers
+
+HEADERS=ewah.h
 
 all: bin/genbitsets
 
@@ -28,7 +31,7 @@ gprof:
 
 .PHONY: all
 
-OBJECTS=split.o \
+OBJECTS=$(VCFLIB_ROOT)/src/split.o \
 		$(VCFLIB_ROOT)/tabixpp/tabix.o \
 		$(VCFLIB_ROOT)/tabixpp/bgzf.o \
 		$(VCFLIB_ROOT)/smithwaterman/SmithWatermanGotoh.o \
@@ -36,7 +39,18 @@ OBJECTS=split.o \
 		$(VCFLIB_ROOT)/smithwaterman/LeftAlign.o \
 		$(VCFLIB_ROOT)/smithwaterman/Repeats.o \
 		$(VCFLIB_ROOT)/smithwaterman/IndelAllele.o \
-		Variant.o \
+		$(VCFLIB_ROOT)/src/Variant.o \
+
+$(VCFLIB_ROOT)/src/split.o:
+$(VCFLIB_ROOT)/src/Variant.o:
+$(VCFLIB_ROOT)/tabixpp/tabix.o:
+$(VCFLIB_ROOT)/tabixpp/bgzf.o:
+$(VCFLIB_ROOT)/smithwaterman/SmithWatermanGotoh.o:
+$(VCFLIB_ROOT)/smithwaterman/disorder.c:
+$(VCFLIB_ROOT)/smithwaterman/LeftAlign.o:
+$(VCFLIB_ROOT)/smithwaterman/Repeats.o:
+$(VCFLIB_ROOT)/smithwaterman/IndelAllele.o:
+ewah.h:
 
 # executables
 

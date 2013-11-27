@@ -1,5 +1,6 @@
 #include "Variant.h"
 #include "split.h"
+#include "ewah.h"
 #include <string>
 #include <iostream>
 
