@@ -16,7 +16,7 @@ INCLUDE = -I$(VCFLIB_ROOT)/src -I$(VCFLIB_ROOT)/ -I$(EWAH_ROOT)/headers
 
 HEADERS=ewah.h
 
-all: bin/genbitsets
+all: prep bin/genbitsets
 
 static:
 	$(MAKE) CFLAGS="$(CFLAGS) -static" all
@@ -52,6 +52,11 @@ $(VCFLIB_ROOT)/smithwaterman/LeftAlign.o:
 $(VCFLIB_ROOT)/smithwaterman/Repeats.o:
 $(VCFLIB_ROOT)/smithwaterman/IndelAllele.o:
 ewah.h:
+
+prep:
+	cd $(VCFLIB_ROOT) && $(MAKE) && cd ..
+	cd $(EWAH_ROOT) && $(MAKE) && cd ..
+	mkdir -p bin
 
 # executables
 
