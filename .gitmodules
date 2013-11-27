@@ -1,6 +1,6 @@
 [submodule "vcflib"]
 	path = vcflib
 	url = https://github.com/ekg/vcflib.git
-[submodule "EWAHBoolArray"]
+[submodule "ewah"]
 	path = ewah
 	url = https://github.com/lemire/EWAHBoolArray.git
