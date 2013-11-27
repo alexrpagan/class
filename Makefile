@@ -1,4 +1,5 @@
-# Compiler
+#
+#Compiler
 CC=g++
 C=gcc
 
@@ -8,7 +9,7 @@ CFLAGS=-O3 -D_FILE_OFFSET_BITS=64
 
 SOURCE_ROOT=src/cpp
 VCFLIB_ROOT=vcflib
-EWAH_ROOT=EWAHBoolArray
+EWAH_ROOT=ewah
 
 LIBS = -L./ -L$(VCFLIB_ROOT)/tabixpp/ -ltabix -lz -lm
 INCLUDE = -I$(VCFLIB_ROOT)/src -I$(VCFLIB_ROOT)/ -I$(EWAH_ROOT)/headers
