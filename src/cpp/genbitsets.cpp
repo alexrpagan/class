@@ -22,7 +22,7 @@ namespace {
 
   const char* HELP_FLAG = "help";
   const char* OUT_FLAG  = "out";
-  const char* VCF_FLAG  = "vcf";
+  const char* VCF_FLAG  = "in";
 
   const string VT_DB_FILE = "vt.db";
   string VT_KEY = "VT";
