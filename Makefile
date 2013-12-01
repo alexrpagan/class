@@ -10,7 +10,7 @@ SOURCE_ROOT=src/cpp
 VCFLIB_ROOT=vcflib
 EWAH_ROOT=ewah
 
-LIBS = -L./ -L$(VCFLIB_ROOT)/tabixpp/ -ltabix -lz -lm -lboost_program_options -lboost_filesystem
+LIBS = -L./ -L$(VCFLIB_ROOT)/tabixpp/ -ltabix -lz -lm -lboost_program_options -lboost_filesystem -lboost_system 
 INCLUDE = -I$(VCFLIB_ROOT)/src -I$(VCFLIB_ROOT)/ -I$(EWAH_ROOT)/headers
 
 HEADERS=ewah.h
