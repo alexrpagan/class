@@ -52,7 +52,7 @@ int main(int argc, char** argv) {
     const string outdir_err = "You must supply a valid output directory.";
     if (vm.count("outdir")) {
       fs::path outdir_path(outdir);
-      if(fs::create_directory(outdir_path)) {
+      if(!fs::create_directory(outdir_path)) {
         return err_out(outdir_err, ERROR);
       }
     } else {
@@ -74,7 +74,12 @@ int main(int argc, char** argv) {
     return ERROR;
   }
 
-  ofstream vdb_file;
+  ofstream vdb;
+  fs::path outdir_path(outdir);
+  fs::path vdb_path(VT_DB_FILE);
+  vdb.open((outdir_path / vdb_path).string().c_str());
+
+  if (!vdb.is_open()) return ERROR;
 
   Variant var(variantFile);
 
@@ -87,23 +92,25 @@ int main(int argc, char** argv) {
 
     if (sampleSize < 0) sampleSize = var.samples.size();
 
-    // TODO: dump this information into variant db streamm
-    cout << var.sequenceName << "\t"
-       << var.position     << "\t"
-       << var.ref          << "\t"
-       << var.getInfoValueString(VT_KEY, 0) << "\t";
+    vdb << var.getInfoValueString(VT_KEY, 0) << "\t"
+        << var.position     << "\t"
+        << var.ref          << "\t";
 
-    var.printAlt(cout);     cout << "\t";
-    var.printAlleles(cout); cout << "\t";
+    var.printAlt(vdb);
+    vdb << "\t" << endl;
 
-    for (; s != sEnd; ++s) {
-      map<string, vector<string> >& sample = s->second;
-      string& genotype = sample["GT"].front(); // XXX assumes we can only have one GT value
-      cout << genotype << "\t";
-    }
-    cout << endl;
+    // for (; s != sEnd; ++s) {
+    //   map<string, vector<string> >& sample = s->second;
+    //   string& genotype = sample["GT"].front(); // XXX assumes we can only have one GT value
+    //   cout << genotype << "\t";
+    // }
+    // cout << endl;
 
   }
+
+  // clean up
+  vdb.close();
+
   return SUCCESS;
 
 }
