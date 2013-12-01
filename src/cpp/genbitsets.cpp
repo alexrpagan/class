@@ -126,7 +126,7 @@ main(int argc, char** argv) {
   Genotypes cpy1;
   Genotypes cpy2;
 
-  int sampleSize = -1, variantCount = 0;
+  int variantCount = 0;
 
   while (variantFile.getNextVariant(var)) {
 
