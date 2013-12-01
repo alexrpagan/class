@@ -157,7 +157,7 @@ main(int argc, char** argv) {
           cerr << var;
           return ERROR;
         }
-        if (idx == 1) {
+        if (idx) {
           switch(cpy_idx) {
             case 0: { bitmap1->set(variantCount); break; }
             case 1: { bitmap2->set(variantCount); break; }
