@@ -21,12 +21,14 @@ namespace {
   string VT_KEY = "VT";
 }
 
-int err_out(const string& err_msg, const int err_code) {
+int
+err_out(const string& err_msg, const int err_code) {
   cerr << err_msg << endl;
   return err_code;
 }
 
-int main(int argc, char** argv) {
+int
+main(int argc, char** argv) {
 
   VariantCallFile variantFile;
   string vcf_file_name, outdir;
