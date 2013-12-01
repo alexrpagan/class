@@ -3,9 +3,12 @@
 #include "ewah.h"
 #include <string>
 #include <iostream>
+#include <sstream>
 #include <fstream>
+#include <cmath>
 #include <boost/program_options.hpp>
 #include <boost/filesystem.hpp>
+#include <boost/shared_ptr.hpp>
 
 using namespace std;
 using namespace vcf;
@@ -14,17 +17,53 @@ namespace po = boost::program_options;
 namespace fs = boost::filesystem;
 
 namespace {
+
   const int SUCCESS = 0;
   const int ERROR = 1;
-  const int BUFFER_SIZE   = 1024 * 1024;
+  const int BUFFER_SIZE   = 1024 * 1024 * 1024;
+
+  const char* HELP_FLAG = "help";
+  const char* OUT_FLAG  = "out";
+  const char* VCF_FLAG  = "vcf";
+
   const string VT_DB_FILE = "vt.db";
   string VT_KEY = "VT";
+
 }
+
+typedef EWAHBoolArray<uint32_t> Bitmap;
+typedef map<string, boost::shared_ptr<Bitmap> > Genotypes;
 
 int
 err_out(const string& err_msg, const int err_code) {
   cerr << err_msg << endl;
   return err_code;
+}
+
+void
+dump_bitmap_part(
+  fs::path outdir
+  , const string& sample_name
+  , const int cpy_idx
+  , const int part_idx
+  , boost::shared_ptr<Bitmap> bitmap_part
+){
+  ofstream bitmap_part_out;
+  stringstream fname("");
+  fname << sample_name << "-" << cpy_idx << "-" << part_idx;
+  fs::path part_path(fname.str());
+  bitmap_part_out.open((outdir / part_path).string().c_str());
+  bitmap_part->write(bitmap_part_out);
+  bitmap_part_out.close();
+}
+
+boost::shared_ptr<Bitmap>
+get_genotype(Genotypes &genotypes, string sample) {
+  if (genotypes.find(sample) == genotypes.end()) {
+    boost::shared_ptr<Bitmap> bitmap(new Bitmap());
+    genotypes[sample] = bitmap;
+  }
+  return genotypes[sample];
 }
 
 int
@@ -35,8 +74,9 @@ main(int argc, char** argv) {
 
   po::options_description desc("Allowed options");
   desc.add_options()
-    ("outdir", po::value<string>(&outdir),        "Name of output dir")
-    ("vcf",    po::value<string>(&vcf_file_name), "Name of vcf file")
+    (HELP_FLAG, "Get some help")
+    (OUT_FLAG,  po::value<string>(&outdir),        "Name of output dir")
+    (VCF_FLAG,  po::value<string>(&vcf_file_name), "Name of vcf file")
   ;
 
   po::variables_map vm;
@@ -46,22 +86,22 @@ main(int argc, char** argv) {
     po::store(po::parse_command_line(argc, argv, desc), vm);
     po::notify(vm);
 
-    if(vm.count("help")) {
+    if(vm.count(HELP_FLAG)) {
       cerr << desc << endl;
       return SUCCESS;
     }
 
     const string outdir_err = "You must supply a valid output directory.";
-    if (vm.count("outdir")) {
+    if (vm.count(OUT_FLAG)) {
       fs::path outdir_path(outdir);
-      if(!fs::create_directory(outdir_path)) {
+      if( !fs::exists(outdir_path) && !fs::create_directory(outdir_path) ) {
         return err_out(outdir_err, ERROR);
       }
     } else {
       return err_out(outdir_err, ERROR);
     }
 
-    if (vm.count("vcf")) {
+    if (vm.count(VCF_FLAG)) {
       variantFile.open(vcf_file_name);
     } else {
       variantFile.open(std::cin);
@@ -85,29 +125,76 @@ main(int argc, char** argv) {
 
   Variant var(variantFile);
 
-  int sampleSize = -1;
+  // TODO: make this work for haploid organisms too
+  Genotypes cpy1;
+  Genotypes cpy2;
+
+  int sampleSize = -1, variantCount = 1;
 
   while (variantFile.getNextVariant(var)) {
 
-    map<string, map<string, vector<string> > >::iterator s     = var.samples.begin();
-    map<string, map<string, vector<string> > >::iterator sEnd  = var.samples.end();
-
-    if (sampleSize < 0) sampleSize = var.samples.size();
-
-    vdb << var.getInfoValueString(VT_KEY, 0) << "\t"
+    vdb << variantCount << "\t"
+        << var.getInfoValueString(VT_KEY, 0) << "\t"
         << var.position     << "\t"
         << var.ref          << "\t";
 
     var.printAlt(vdb);
     vdb << "\t" << endl;
 
-    // for (; s != sEnd; ++s) {
-    //   map<string, vector<string> >& sample = s->second;
-    //   string& genotype = sample["GT"].front(); // XXX assumes we can only have one GT value
-    //   cout << genotype << "\t";
-    // }
-    // cout << endl;
+    map<string, map<string, vector<string> > >::iterator s     = var.samples.begin();
+    map<string, map<string, vector<string> > >::iterator sEnd  = var.samples.end();
 
+    for (; s != sEnd; ++s) {
+
+      boost::shared_ptr<Bitmap> bitmap1 = get_genotype(cpy1, s->first);
+      boost::shared_ptr<Bitmap> bitmap2 = get_genotype(cpy2, s->first);
+
+      map<string, vector<string> >& sample = s->second;
+      // XXX assumes we can only have one GT value
+      string& genotype = sample["GT"].front();
+      vector<string> gt = split(genotype, "|/");
+      int cpy_idx = 0;
+      for (vector<string>::iterator g = gt.begin(); g != gt.end(); ++g, ++cpy_idx) {
+        int idx = atoi(g->c_str());
+        if (idx != 0 && idx != 1) {
+          cerr << "Invalid genotype entry: " << idx << endl;
+          cerr << var;
+          return ERROR;
+        }
+        if (idx == 1) {
+          switch(cpy_idx) {
+            case 0: { bitmap1->set(variantCount); break; }
+            case 1: { bitmap2->set(variantCount); break; }
+            default: {
+              cerr << "Invalid ploidy: " << cpy_idx << endl;
+              cerr << var;
+              return ERROR;
+            }
+          }
+        }
+      }
+
+      if (variantCount % BUFFER_SIZE == 0) {
+        int var_idx = variantCount / BUFFER_SIZE;
+        dump_bitmap_part(outdir_path, s->first, 1, var_idx, bitmap1);
+        dump_bitmap_part(outdir_path, s->first, 2, var_idx, bitmap2);
+      }
+    }
+
+    if (variantCount % BUFFER_SIZE == 0) {
+      cpy1.clear();
+      cpy2.clear();
+    }
+
+    variantCount++;
+  }
+
+  if (variantCount % BUFFER_SIZE != 0) {
+    int var_idx = (int) ceil(variantCount / BUFFER_SIZE);
+    for(Genotypes::iterator iter = cpy1.begin(); iter != cpy1.end(); ++iter) {
+      dump_bitmap_part(outdir_path, iter->first, 1, var_idx, iter->second);
+      dump_bitmap_part(outdir_path, iter->first, 2, var_idx, cpy2[iter->first]);
+    }
   }
 
   // clean up
