@@ -65,3 +65,7 @@ genbitsets.o: $(SOURCE_ROOT)/genbitsets.cpp
 clean:
 	rm -f *.o
 	rm -f bin/*
+
+fetch:
+	cd .. && curl http://cast.csail.mit.edu/cast_v0.9.tar.gz | tar xz
+	cd .. && curl http://sun.aei.polsl.pl/tgc/download/tgc.tar.gz | tar xz
