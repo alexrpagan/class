@@ -5,7 +5,6 @@
 #include <iostream>
 #include <sstream>
 #include <fstream>
-#include <cmath>
 #include <boost/program_options.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/shared_ptr.hpp>
@@ -20,7 +19,6 @@ namespace {
 
   const int SUCCESS = 0;
   const int ERROR = 1;
-  const int BUFFER_SIZE   = 1024 * 1024 * 1024;
 
   const char* HELP_FLAG = "help";
   const char* OUT_FLAG  = "out";
@@ -45,12 +43,11 @@ dump_bitmap_part(
   fs::path outdir
   , const string& sample_name
   , const int cpy_idx
-  , const int part_idx
   , boost::shared_ptr<Bitmap> bitmap_part
 ){
   ofstream bitmap_part_out;
   stringstream fname("");
-  fname << sample_name << "-" << cpy_idx << "-" << part_idx;
+  fname << sample_name << "-" << cpy_idx;
   fs::path part_path(fname.str());
   bitmap_part_out.open((outdir / part_path).string().c_str());
   bitmap_part->write(bitmap_part_out);
@@ -129,7 +126,7 @@ main(int argc, char** argv) {
   Genotypes cpy1;
   Genotypes cpy2;
 
-  int sampleSize = -1, variantCount = 1;
+  int sampleSize = -1, variantCount = 0;
 
   while (variantFile.getNextVariant(var)) {
 
@@ -145,7 +142,6 @@ main(int argc, char** argv) {
     map<string, map<string, vector<string> > >::iterator sEnd  = var.samples.end();
 
     for (; s != sEnd; ++s) {
-
       boost::shared_ptr<Bitmap> bitmap1 = get_genotype(cpy1, s->first);
       boost::shared_ptr<Bitmap> bitmap2 = get_genotype(cpy2, s->first);
 
@@ -173,28 +169,13 @@ main(int argc, char** argv) {
           }
         }
       }
-
-      if (variantCount % BUFFER_SIZE == 0) {
-        int var_idx = variantCount / BUFFER_SIZE;
-        dump_bitmap_part(outdir_path, s->first, 1, var_idx, bitmap1);
-        dump_bitmap_part(outdir_path, s->first, 2, var_idx, bitmap2);
-      }
     }
-
-    if (variantCount % BUFFER_SIZE == 0) {
-      cpy1.clear();
-      cpy2.clear();
-    }
-
     variantCount++;
   }
 
-  if (variantCount % BUFFER_SIZE != 0) {
-    int var_idx = (int) ceil(variantCount / BUFFER_SIZE);
-    for(Genotypes::iterator iter = cpy1.begin(); iter != cpy1.end(); ++iter) {
-      dump_bitmap_part(outdir_path, iter->first, 1, var_idx, iter->second);
-      dump_bitmap_part(outdir_path, iter->first, 2, var_idx, cpy2[iter->first]);
-    }
+  for(Genotypes::iterator iter = cpy1.begin(); iter != cpy1.end(); ++iter) {
+    dump_bitmap_part(outdir_path, iter->first, 1, iter->second);
+    dump_bitmap_part(outdir_path, iter->first, 2, cpy2[iter->first]);
   }
 
   // clean up
