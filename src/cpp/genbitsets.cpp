@@ -130,6 +130,12 @@ main(int argc, char** argv) {
 
   while (variantFile.getNextVariant(var)) {
 
+    if (!var.isPhased()) {
+      cerr << "variant " << var.sequenceName << ":" << var.position
+           << " is not phased, skipping"     << endl;
+      continue;
+    }
+
     vdb << variantCount << "\t"
         << var.getInfoValueString(VT_KEY, 0) << "\t"
         << var.position     << "\t"
@@ -142,11 +148,12 @@ main(int argc, char** argv) {
     map<string, map<string, vector<string> > >::iterator sEnd  = var.samples.end();
 
     for (; s != sEnd; ++s) {
+
       boost::shared_ptr<Bitmap> bitmap1 = get_genotype(cpy1, s->first);
       boost::shared_ptr<Bitmap> bitmap2 = get_genotype(cpy2, s->first);
 
       map<string, vector<string> >& sample = s->second;
-      // XXX assumes we can only have one GT value
+
       string& genotype = sample["GT"].front();
       vector<string> gt = split(genotype, "|/");
       int cpy_idx = 0;
@@ -170,7 +177,9 @@ main(int argc, char** argv) {
         }
       }
     }
+
     variantCount++;
+
   }
 
   for(Genotypes::iterator iter = cpy1.begin(); iter != cpy1.end(); ++iter) {
