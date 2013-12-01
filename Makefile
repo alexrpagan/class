@@ -1,5 +1,4 @@
-#
-#Compiler
+# Compiler
 CC=g++
 C=gcc
 
@@ -11,12 +10,12 @@ SOURCE_ROOT=src/cpp
 VCFLIB_ROOT=vcflib
 EWAH_ROOT=ewah
 
-LIBS = -L./ -L$(VCFLIB_ROOT)/tabixpp/ -ltabix -lz -lm
+LIBS = -L./ -L$(VCFLIB_ROOT)/tabixpp/ -ltabix -lz -lm -lboost_program_options -lboost_filesystem
 INCLUDE = -I$(VCFLIB_ROOT)/src -I$(VCFLIB_ROOT)/ -I$(EWAH_ROOT)/headers
 
 HEADERS=ewah.h
 
-all: prep bin/genbitsets
+all: bin/genbitsets
 
 static:
 	$(MAKE) CFLAGS="$(CFLAGS) -static" all
@@ -52,11 +51,6 @@ $(VCFLIB_ROOT)/smithwaterman/LeftAlign.o:
 $(VCFLIB_ROOT)/smithwaterman/Repeats.o:
 $(VCFLIB_ROOT)/smithwaterman/IndelAllele.o:
 ewah.h:
-
-prep:
-	cd $(VCFLIB_ROOT) && $(MAKE) && cd ..
-	cd $(EWAH_ROOT) && $(MAKE) && cd ..
-	mkdir -p bin
 
 # executables
 
