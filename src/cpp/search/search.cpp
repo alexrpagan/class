@@ -1,8 +1,10 @@
 // TODO: remove unused INCLUDES
 
 #include <fstream>
+#include <sstream>
 
 #include "ewah.h"
+#include "tabix.hpp"
 
 #include <ncbi_pch.hpp>
 #include <corelib/ncbiapp.hpp>
@@ -47,10 +49,12 @@ namespace {
   const string BLAST_PROGRAM      = "blastn";
   const string EVALUE_FLAG        = "evalue";
   const string INPUT_FLAG         = "in";
+  const string CHR_FLAG           = "chr";
   const string VDB_FLAG           = "vdb";
   const string DB_FLAG            = "db";
 
-  const string VDB_FILENAME = "vt.db";
+  const string VDB_BASE_FILENAME = "vt";
+  const string VDB_FILENAME = "vt.db.gz";
 
 }
 
@@ -66,9 +70,11 @@ private:
   virtual void Exit(void);
 
   CSearchResultSet RunBlast(string dbname, TSeqLocVector query_loc, CRef<CBlastOptionsHandle> opts);
+  fs::path getVDBFilePath(const string vdb_dir);
   Genotypes SlurpGenotypes(const string vdb_dir);
   void PrintErrorMessages(CSearchResults &queryResult);
   void PrintQueryResult(CSearchResults &queryResult);
+  string getRegion(string chr, int start, int end);
 
 };
 
@@ -86,6 +92,9 @@ CSearchApplication::Init(void)
 
   arg_desc->AddKey(VDB_FLAG, "VDB",
     "Location of variant database", CArgDescriptions::eString);
+
+  arg_desc->AddKey(CHR_FLAG, "chr",
+    "The chromosome to blast over", CArgDescriptions::eString);
 
   arg_desc->AddKey(INPUT_FLAG, "QueryFile",
     "FASTA file containing queries", CArgDescriptions::eInputFile);
@@ -127,21 +136,73 @@ CSearchApplication::Run(void)
   CBlastInput blast_input(&fasta_input);
   TSeqLocVector query_loc = blast_input.GetAllSeqLocs(scope);
 
-  string dbname = args[DB_FLAG].AsString();
+  string dbname  = args[DB_FLAG].AsString();
+  string vdbpath = args[VDB_FLAG].AsString();
+  string chr     = args[CHR_FLAG].AsString();
 
-  Genotypes genotypes = SlurpGenotypes(args[VDB_FLAG].AsString());
+  Genotypes genotypes = SlurpGenotypes(vdbpath);
 
+  string vdb_file_name = getVDBFilePath(vdbpath).string();
+  Tabix vdb(vdb_file_name);
+
+  // coarse blast.
   CSearchResultSet results = RunBlast(dbname, query_loc, opts);
+
   for (unsigned int i = 0; i < results.GetNumResults(); i++) {
     CSearchResults &queryResult = results[i];
     PrintErrorMessages(queryResult);
-    PrintQueryResult(queryResult);
+    const list<CRef<CSeq_align> > &seqAlignList = queryResult.GetSeqAlign()->Get();
+    ITERATE(list <CRef<CSeq_align> >, seqAlignIter, seqAlignList) {
 
-    // TODO: search tabix DB for variants
+      int start = (*seqAlignIter)->GetSeqStart(1);
+      int stop  = (*seqAlignIter)->GetSeqStop(1);
+      string region = getRegion(chr, start, stop);
 
+      cout << region << endl;
+
+      list< vector<string> > variants;
+
+      string line;
+      vdb.setRegion(region);
+      while(vdb.getNextLine(line)) {
+        vector<string> row;
+        stringstream ss(line);
+        string cell;
+        while(getline(ss, cell, '\t')) {
+          row.push_back(cell);
+        }
+        cout << row[1] << "\t" << row[4] << "\t" << row[5] << endl;
+        variants.push_back(row);
+      }
+
+      // TODO: which individuals have which variants?
+
+      // Map unique variant sets to individuals
+
+      // Construct FASTA strings from unique variant sets
+
+      // Run fine blast
+
+      // Report results.
+
+    }
   }
 
   return SUCCESS;
+}
+
+string
+CSearchApplication::getRegion(string chr, int start, int end) {
+  ostringstream ss;
+  ss << chr << ":" << start << "-" << end;
+  return ss.str();
+}
+
+fs::path
+CSearchApplication::getVDBFilePath(const string vdb_dir) {
+  fs::path db_path(vdb_dir);
+  fs::path vdb_name(VDB_FILENAME);
+  return (db_path / vdb_name);
 }
 
 Genotypes
@@ -153,7 +214,7 @@ CSearchApplication::SlurpGenotypes(const string vdb_dir) {
   if (fs::exists(vdb_path) && fs::is_directory(vdb_path)) {
     for(fs::directory_iterator dir_iter(vdb_path) ; dir_iter != end_iter ; ++dir_iter) {
       fs::path base = dir_iter->path().stem();
-      if (base != vt_path.stem()) {
+      if (base.string().find(VDB_BASE_FILENAME) == std::string::npos) {
         boost::shared_ptr<Bitmap> bitmap(new Bitmap());
         ifstream in;
         in.open(dir_iter->path().string().c_str());
