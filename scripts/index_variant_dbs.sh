@@ -1,4 +1,4 @@
-#a!/bin/bash
+#!/bin/bash
 
 DBDIR=/data/apagan/vdb
 TABIX_ROOT=/home/apagan/code/class/vcflib/tabixpp
