@@ -1,5 +1,7 @@
 // TODO: remove unused INCLUDES
 
+#include <fstream>
+
 #include "ewah.h"
 
 #include <ncbi_pch.hpp>
@@ -26,10 +28,13 @@
 #include <algo/blast/blastinput/blast_fasta_input.hpp>
 
 #include <boost/filesystem.hpp>
+#include <boost/shared_ptr.hpp>
 
 USING_NCBI_SCOPE;
 USING_SCOPE(blast);
 USING_SCOPE(objects);
+
+namespace fs = boost::filesystem;
 
 namespace {
 
@@ -49,16 +54,22 @@ namespace {
 
 }
 
+typedef EWAHBoolArray<uint32_t> Bitmap;
+typedef map<string, boost::shared_ptr<Bitmap> > Genotypes;
+
 class CSearchApplication : public CNcbiApplication
 {
 private:
+
   virtual void Init(void);
   virtual int  Run(void);
   virtual void Exit(void);
 
   CSearchResultSet RunBlast(string dbname, TSeqLocVector query_loc, CRef<CBlastOptionsHandle> opts);
+  Genotypes SlurpGenotypes(string vdb_dir);
   void PrintErrorMessages(CSearchResults &queryResult);
   void PrintQueryResult(CSearchResults &queryResult);
+
 };
 
 void
@@ -118,7 +129,7 @@ CSearchApplication::Run(void)
 
   string dbname = args[DB_FLAG].AsString();
 
-  // TODO: Pre-load bitvectors for chromosome of interest.
+  Genotypes genotypes = SlurpGenotypes(args[VDB_FLAG].AsString());
 
   CSearchResultSet results = RunBlast(dbname, query_loc, opts);
   for (unsigned int i = 0; i < results.GetNumResults(); i++) {
@@ -131,6 +142,28 @@ CSearchApplication::Run(void)
   }
 
   return SUCCESS;
+}
+
+Genotypes
+CSearchApplication::SlurpGenotypes(string vdb_dir) {
+  Genotypes genotypes;
+  fs::directory_iterator end_iter;
+  fs::path vdb_path(vdb_dir);
+  fs::path vt_path(VDB_FILENAME);
+  if (fs::exists(vdb_path) && fs::is_directory(vdb_path)) {
+    for(fs::directory_iterator dir_iter(vdb_path) ; dir_iter != end_iter ; ++dir_iter) {
+      fs::path base = dir_iter->path().stem();
+      if (base != vt_path.stem()) {
+        boost::shared_ptr<Bitmap> bitmap(new Bitmap());
+        ifstream in;
+        in.open(dir_iter->path().string().c_str());
+        bitmap->read(in);
+        in.close();
+        genotypes[base.string()] = bitmap;
+      }
+    }
+  }
+  return genotypes;
 }
 
 CSearchResultSet
