@@ -1,5 +1,7 @@
 // TODO: remove unused INCLUDES
 
+#include "ewah.h"
+
 #include <ncbi_pch.hpp>
 #include <corelib/ncbiapp.hpp>
 #include <corelib/ncbienv.hpp>
