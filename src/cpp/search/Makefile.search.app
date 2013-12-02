@@ -2,4 +2,7 @@
 APP = search
 SRC = search
 
-LIB = xncbi
+LIB_ = $(BLAST_INPUT_LIBS) $(BLAST_LIBS) $(OBJMGR_LIBS)
+LIB = $(LIB_:%=%$(STATIC))
+
+LIBS = $(CMPRS_LIBS) $(DL_LIBS) $(NETWORK_LIBS) $(ORIG_LIBS)
