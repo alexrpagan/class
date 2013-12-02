@@ -66,7 +66,7 @@ private:
   virtual void Exit(void);
 
   CSearchResultSet RunBlast(string dbname, TSeqLocVector query_loc, CRef<CBlastOptionsHandle> opts);
-  Genotypes SlurpGenotypes(string vdb_dir);
+  Genotypes SlurpGenotypes(const string vdb_dir);
   void PrintErrorMessages(CSearchResults &queryResult);
   void PrintQueryResult(CSearchResults &queryResult);
 
@@ -145,7 +145,7 @@ CSearchApplication::Run(void)
 }
 
 Genotypes
-CSearchApplication::SlurpGenotypes(string vdb_dir) {
+CSearchApplication::SlurpGenotypes(const string vdb_dir) {
   Genotypes genotypes;
   fs::directory_iterator end_iter;
   fs::path vdb_path(vdb_dir);
@@ -159,7 +159,7 @@ CSearchApplication::SlurpGenotypes(string vdb_dir) {
         in.open(dir_iter->path().string().c_str());
         bitmap->read(in);
         in.close();
-        genotypes[base.string()] = bitmap;
+        genotypes.insert(make_pair(base.string(), bitmap));
       }
     }
   }
