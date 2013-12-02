@@ -3,6 +3,6 @@ APP = search
 SRC = search
 
 LIB_ = $(BLAST_INPUT_LIBS) $(BLAST_LIBS) $(OBJMGR_LIBS)
-LIB = $(LIB_:%=%$(STATIC))
+LIB = boost_system $(LIB_:%=%$(STATIC))
 
 LIBS = $(CMPRS_LIBS) $(DL_LIBS) $(NETWORK_LIBS) $(ORIG_LIBS)

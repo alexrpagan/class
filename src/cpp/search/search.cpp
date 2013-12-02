@@ -1,5 +1,3 @@
-#include <cstring>
-
 // TODO: remove unused INCLUDES
 
 #include <ncbi_pch.hpp>
@@ -24,6 +22,8 @@
 
 #include <algo/blast/blastinput/blast_input.hpp>
 #include <algo/blast/blastinput/blast_fasta_input.hpp>
+
+#include <boost/filesystem.hpp>
 
 USING_NCBI_SCOPE;
 USING_SCOPE(blast);
