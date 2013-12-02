@@ -61,6 +61,9 @@ namespace {
 typedef EWAHBoolArray<uint32_t> Bitmap;
 typedef map<string, boost::shared_ptr<Bitmap> > Genotypes;
 
+typedef vector<string> Row;
+typedef list<Row> Rows;
+
 class CSearchApplication : public CNcbiApplication
 {
 private:
@@ -75,6 +78,7 @@ private:
   void PrintErrorMessages(CSearchResults &queryResult);
   void PrintQueryResult(CSearchResults &queryResult);
   string getRegion(string chr, int start, int end);
+  Rows getVariantsInRegion(Tabix vdb, string region);
 
 };
 
@@ -160,20 +164,7 @@ CSearchApplication::Run(void)
 
       cout << region << endl;
 
-      list< vector<string> > variants;
-
-      string line;
-      vdb.setRegion(region);
-      while(vdb.getNextLine(line)) {
-        vector<string> row;
-        stringstream ss(line);
-        string cell;
-        while(getline(ss, cell, '\t')) {
-          row.push_back(cell);
-        }
-        cout << row[1] << "\t" << row[4] << "\t" << row[5] << endl;
-        variants.push_back(row);
-      }
+      Rows variants = getVariantsInRegion(vdb, region);
 
       // TODO: which individuals have which variants?
 
@@ -189,6 +180,23 @@ CSearchApplication::Run(void)
   }
 
   return SUCCESS;
+}
+
+Rows
+CSearchApplication::getVariantsInRegion(Tabix vdb, string region) {
+  Rows variants;
+  string line;
+  vdb.setRegion(region);
+  while(vdb.getNextLine(line)) {
+    Row row;
+    stringstream ss(line);
+    string cell;
+    while(getline(ss, cell, '\t')) {
+      row.push_back(cell);
+    }
+    variants.push_back(row);
+  }
+  return variants;
 }
 
 string
