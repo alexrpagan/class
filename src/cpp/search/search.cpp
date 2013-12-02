@@ -1,5 +1,7 @@
 #include <cstring>
 
+// TODO: remove unused INCLUDES
+
 #include <ncbi_pch.hpp>
 #include <corelib/ncbiapp.hpp>
 #include <corelib/ncbienv.hpp>
@@ -38,7 +40,10 @@ namespace {
   const string BLAST_PROGRAM      = "blastn";
   const string EVALUE_FLAG        = "evalue";
   const string INPUT_FLAG         = "in";
+  const string VDB_FLAG           = "vdb";
   const string DB_FLAG            = "db";
+
+  const string VDB_FILENAME = "vt.db";
 
 }
 
@@ -63,10 +68,11 @@ CSearchApplication::Init(void)
   arg_desc->SetUsageContext(GetArguments().GetProgramBasename(),
                 "Blast over bitvector-compressed genomes");
 
-  arg_desc->AddKey
-    (DB_FLAG, "Database",
-     "Location of reference blast database",
-     CArgDescriptions::eString);
+  arg_desc->AddKey(DB_FLAG, "Database",
+    "Location of reference blast database", CArgDescriptions::eString);
+
+  arg_desc->AddKey(VDB_FLAG, "VDB",
+    "Location of variant database", CArgDescriptions::eString);
 
   arg_desc->AddKey(INPUT_FLAG, "QueryFile",
     "FASTA file containing queries", CArgDescriptions::eInputFile);
@@ -84,7 +90,6 @@ CSearchApplication::Init(void)
 int
 CSearchApplication::Run(void)
 {
-
   const CArgs& args = GetArgs();
 
   EProgram program = ProgramNameToEnum(BLAST_PROGRAM);
@@ -111,15 +116,19 @@ CSearchApplication::Run(void)
 
   string dbname = args[DB_FLAG].AsString();
 
+  // TODO: Pre-load bitvectors for chromosome of interest.
+
   CSearchResultSet results = RunBlast(dbname, query_loc, opts);
   for (unsigned int i = 0; i < results.GetNumResults(); i++) {
     CSearchResults &queryResult = results[i];
     PrintErrorMessages(queryResult);
     PrintQueryResult(queryResult);
+
+    // TODO: search tabix DB for variants
+
   }
 
   return SUCCESS;
-
 }
 
 CSearchResultSet
