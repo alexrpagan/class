@@ -1,0 +1,3 @@
+.built
+*.log
+.#SRC-cache

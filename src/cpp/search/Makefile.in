@@ -1,0 +1,4 @@
+APP_PROJ = search
+
+srcdir = @srcdir@
+include @builddir@/Makefile.meta
