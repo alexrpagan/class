@@ -8,12 +8,19 @@
 
 #include <ncbi_pch.hpp>
 #include <corelib/ncbiapp.hpp>
+#include <corelib/ncbistre.hpp>
 #include <corelib/ncbienv.hpp>
 #include <corelib/ncbiargs.hpp>
 
 #include <objmgr/object_manager.hpp>
 
 #include <objects/seqalign/Seq_align_set.hpp>
+
+#include <objtools/blast/seqdb_reader/seqdb.hpp>
+#include <objtools/blast/seqdb_reader/seqdbexpert.hpp>
+#include <objtools/blast/blastdb_format/seq_writer.hpp>
+#include <objtools/blast/blastdb_format/blastdb_formatter.hpp>
+#include <objtools/blast/blastdb_format/blastdb_seqid.hpp>
 
 #include <algo/blast/api/sseqloc.hpp>
 #include <algo/blast/api/local_blast.hpp>
@@ -37,6 +44,7 @@ USING_SCOPE(objects);
 
 namespace fs = boost::filesystem;
 
+// TODO: move these to class definition?
 namespace {
 
   const int SUCCESS = 0;
@@ -49,7 +57,6 @@ namespace {
   const string EVALUE_FLAG        = "evalue";
   const string INPUT_FLAG         = "in";
   const string CHR_FLAG           = "chr";
-  const string REF_FLAG           = "ref";
   const string VDB_FLAG           = "vdb";
   const string DB_FLAG            = "db";
 
@@ -58,13 +65,15 @@ namespace {
 
 }
 
+// TODO: move these typedefs into class def.
 typedef EWAHBoolArray<uint32_t> Bitmap;
 typedef map<string, boost::shared_ptr<Bitmap> > Genotypes;
+typedef vector< CRef<CBlastDBSeqId> > TQueries;
 
 typedef vector<string> Row;
 typedef list<Row> Rows;
 
-class CSearchApplication : public CNcbiApplication
+class SearchApp : public CNcbiApplication
 {
 private:
 
@@ -79,11 +88,12 @@ private:
   void PrintQueryResult(CSearchResults &queryResult);
   string getRegion(string chr, int start, int end);
   Bitmap bitmapFromArray(vector<size_t> array);
+  void getReferenceSequence(CNcbiOstream& out, CRef<CSeqDBExpert> blastDb, int start, int end);
 
 };
 
 void
-CSearchApplication::Init(void)
+SearchApp::Init(void)
 {
 
   auto_ptr<CArgDescriptions> arg_desc(new CArgDescriptions);
@@ -96,9 +106,6 @@ CSearchApplication::Init(void)
 
   arg_desc->AddKey(VDB_FLAG, "VDB",
     "Location of variant database", CArgDescriptions::eString);
-
-  arg_desc->AddKey(REF_FLAG, "Reference",
-    "Location of reference genome", CArgDescriptions::eString);
 
   arg_desc->AddKey(CHR_FLAG, "chr",
     "The chromosome to blast over", CArgDescriptions::eString);
@@ -117,7 +124,7 @@ CSearchApplication::Init(void)
 }
 
 int
-CSearchApplication::Run(void)
+SearchApp::Run(void)
 {
   const CArgs& args = GetArgs();
 
@@ -147,10 +154,15 @@ CSearchApplication::Run(void)
   string vdbpath = args[VDB_FLAG].AsString();
   string chr     = args[CHR_FLAG].AsString();
 
+  // TODO: consider making these members.
+
   Genotypes genotypes = SlurpGenotypes(vdbpath);
 
   string vdb_file_name = getVDBFilePath(vdbpath).string();
   Tabix vdb(vdb_file_name);
+
+  CRef<CSeqDBExpert> blastDbReader;
+  blastDbReader.Reset(new CSeqDBExpert(dbname, CSeqDB::eNucleotide));
 
   // coarse blast.
   CSearchResultSet results = RunBlast(dbname, query_loc, opts);
@@ -169,10 +181,17 @@ CSearchApplication::Run(void)
 
       int start = (*seqAlignIter)->GetSeqStart(1);
       int stop  = (*seqAlignIter)->GetSeqStop(1);
+
       string region = getRegion(chr, start, stop);
 
-      cout << region << endl;
+      // Where are the random characters coming from?
+      CNcbiOstrstream ss;
+      getReferenceSequence(ss, blastDbReader, start, stop);
 
+      cout << region << endl;
+      cout << ss.str() << endl << endl;
+
+      // TODO: extract this into a method
       Rows variants;
       string line;
       vdb.setRegion(region);
@@ -197,37 +216,60 @@ CSearchApplication::Run(void)
       for (Genotypes::iterator it = genotypes.begin(); it != genotypes.end(); ++it) {
         Bitmap and_result;
         it->second->logicaland(variant_filter, and_result);
+        // Convert to vector of bits to key variant_genotypes.
+        // The bitset class does not implement cmp.
         vector<size_t> bits_set = and_result.toArray();
-
         if (variant_genotypes.find(bits_set) == variant_genotypes.end()) {
           boost::shared_ptr<vector<string> > vec(new vector<string>());
           variant_genotypes.insert(make_pair(bits_set, vec));
         }
-
         variant_genotypes[bits_set]->push_back(it->first);
       }
-
-      map<vector<size_t>, boost::shared_ptr<vector<string> > >::iterator it = variant_genotypes.begin();
-
-      // cout << variant_filter.numberOfOnes() << " variants (total) " << endl;
-      // for(; it != variant_genotypes.end(); ++it) {
-      //   cout << bitmapFromArray(it->first) << " variants : " << it->second->size() << " genomes " << endl;
-      // }
-
+      // TODOS:
+      // Implement a timer.
+      // Strip headers off of FASTA strings
       // Construct FASTA strings from unique variant sets
-
       // Run fine blast
-
       // Report results.
-
     }
   }
 
   return SUCCESS;
 }
 
+void
+SearchApp::getReferenceSequence(CNcbiOstream& out, CRef<CSeqDBExpert> blastDb, int start, int end) {
+  TSeqRange range(start, end);
+  CSeqFormatterConfig conf;
+  conf.m_SeqRange = range;
+  conf.m_Strand = eNa_strand_plus;
+  conf.m_TargetOnly = true;
+  conf.m_UseCtrlA = true;
+
+  TQueries queries;
+  for (int oid = 0; blastDb->CheckOrFindOID(oid); oid++) {
+    vector<int> gis;
+    blastDb->GetGis(oid, gis);
+    if (gis.empty()) {
+      CRef<CBlastDBSeqId> blastdb_seqid(new CBlastDBSeqId());
+      blastdb_seqid->SetOID(oid);
+      queries.push_back(blastdb_seqid);
+    } else {
+      ITERATE(vector<int>, gi, gis) {
+        queries.push_back(CRef<CBlastDBSeqId>(new CBlastDBSeqId(NStr::IntToString(*gi))));
+      }
+    }
+  }
+
+  const string outfmt = "%f";
+  CSeqFormatter seq_fmt(outfmt, *blastDb, out, conf);
+  NON_CONST_ITERATE(TQueries, itr, queries) {
+    seq_fmt.Write(**itr);
+  }
+}
+
 Bitmap
-CSearchApplication::bitmapFromArray(vector<size_t> array) {
+SearchApp::bitmapFromArray(vector<size_t> array) {
   Bitmap bits;
   for (unsigned int i = 0; i < array.size(); ++i) {
     bits.set(array[i]);
@@ -236,21 +278,21 @@ CSearchApplication::bitmapFromArray(vector<size_t> array) {
 }
 
 string
-CSearchApplication::getRegion(string chr, int start, int end) {
+SearchApp::getRegion(string chr, int start, int end) {
   ostringstream ss;
   ss << chr << ":" << start << "-" << end;
   return ss.str();
 }
 
 fs::path
-CSearchApplication::getVDBFilePath(const string vdb_dir) {
+SearchApp::getVDBFilePath(const string vdb_dir) {
   fs::path db_path(vdb_dir);
   fs::path vdb_name(VDB_FILENAME);
   return (db_path / vdb_name);
 }
 
 Genotypes
-CSearchApplication::SlurpGenotypes(const string vdb_dir) {
+SearchApp::SlurpGenotypes(const string vdb_dir) {
   Genotypes genotypes;
   fs::directory_iterator end_iter;
   fs::path vdb_path(vdb_dir);
@@ -272,7 +314,7 @@ CSearchApplication::SlurpGenotypes(const string vdb_dir) {
 }
 
 CSearchResultSet
-CSearchApplication::RunBlast(string dbname, TSeqLocVector query_loc, CRef<CBlastOptionsHandle> opts)
+SearchApp::RunBlast(string dbname, TSeqLocVector query_loc, CRef<CBlastOptionsHandle> opts)
 {
   const CSearchDatabase target_db(dbname, CSearchDatabase::eBlastDbIsNucleotide);
   CRef<IQueryFactory> query_factory(new CObjMgr_QueryFactory(query_loc));
@@ -281,7 +323,7 @@ CSearchApplication::RunBlast(string dbname, TSeqLocVector query_loc, CRef<CBlast
 }
 
 void
-CSearchApplication::PrintQueryResult(CSearchResults &queryResult)
+SearchApp::PrintQueryResult(CSearchResults &queryResult)
 {
   const list<CRef<CSeq_align> > &seqAlignList = queryResult.GetSeqAlign()->Get();
   ITERATE(list <CRef<CSeq_align> >, seqAlignIter, seqAlignList) {
@@ -293,7 +335,7 @@ CSearchApplication::PrintQueryResult(CSearchResults &queryResult)
 }
 
 void
-CSearchApplication::PrintErrorMessages(CSearchResults &queryResult) {
+SearchApp::PrintErrorMessages(CSearchResults &queryResult) {
     // print any error messages
     TQueryMessages messages = queryResult.GetErrors(eBlastSevWarning);
     if (messages.size() > 0) {
@@ -310,7 +352,7 @@ CSearchApplication::PrintErrorMessages(CSearchResults &queryResult) {
 }
 
 void
-CSearchApplication::Exit(void)
+SearchApp::Exit(void)
 {
   SetDiagStream(0);
 }
@@ -318,5 +360,5 @@ CSearchApplication::Exit(void)
 int
 main(int argc, const char* argv[])
 {
-  return CSearchApplication().AppMain(argc, argv, 0, eDS_Default, 0);
+  return SearchApp().AppMain(argc, argv, 0, eDS_Default, 0);
 }
