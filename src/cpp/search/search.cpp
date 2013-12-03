@@ -51,6 +51,8 @@ namespace {
   const int SUCCESS = 0;
   const int ERROR = 1;
 
+  const unsigned int PUNT_THRESH = 1000;
+
   const bool IS_PROTEIN = false;
 
   const string COARSE_EVALUE_FLAG = "coarse_evalue";
@@ -201,13 +203,13 @@ SearchApp::Run(void)
   // coarse blast.
   CSearchResultSet results = RunBlast(dbname, query_loc, opts);
 
-  for (unsigned int i = 0; i < results.GetNumResults(); i++) {
-    CSearchResults &queryResult = results[i];
+  for (unsigned int query_idx = 0; query_idx < results.GetNumResults(); query_idx++) {
+    CSearchResults &queryResult = results[query_idx];
     PrintErrorMessages(queryResult);
     const list<CRef<CSeq_align> > &seqAlignList = queryResult.GetSeqAlign()->Get();
 
-    if (seqAlignList.size() > 1000) {
-      cout << "punted query " << i << endl;
+    if (seqAlignList.size() > PUNT_THRESH) {
+      cout << "punted query " << query_idx << endl;
       continue;
     }
 
@@ -216,7 +218,6 @@ SearchApp::Run(void)
       int start = (*seqAlignIter)->GetSeqStart(1);
       int stop  = (*seqAlignIter)->GetSeqStop(1);
 
-      //cout << start << "-" << stop << endl;
       string refSeq;
       getReferenceSequence(refSeq, blastDbReader, start, stop);
 
@@ -262,8 +263,8 @@ SearchApp::Run(void)
       list<string> fine_blast_targets;
       for(; it != variant_genotypes.end(); ++it) {
         Rows variants;
-        for(unsigned int i = 0; i < (it->first).size(); ++i) {
-          variants.push_back(variantsByBit[(it->first)[i]]);
+        for(unsigned int variant_idx = 0; variant_idx < (it->first).size(); ++variant_idx) {
+          variants.push_back(variantsByBit[(it->first)[variant_idx]]);
         }
         string varSeq;
         getVariantSequence(varSeq, variants, refSeq, start);
@@ -271,9 +272,9 @@ SearchApp::Run(void)
       }
 
       stringstream fine_blast_input_ss;
-      int i = 0;
-      for (list<string>::iterator it = fine_blast_targets.begin(); it != fine_blast_targets.end(); ++it, ++i) {
-        fine_blast_input_ss << ">SEQ" << i << endl;
+      int seq_idx = 0;
+      for (list<string>::iterator it = fine_blast_targets.begin(); it != fine_blast_targets.end(); ++it, ++seq_idx) {
+        fine_blast_input_ss << ">SEQ" << seq_idx << endl;
         fine_blast_input_ss << *it << endl;
       }
 
@@ -282,9 +283,8 @@ SearchApp::Run(void)
       //trim trailing endl to make fasta parser happy.
       fine_blast_input_str.erase(fine_blast_input_str.length() - 1, 1);
 
-      if(args[EVALUE_FLAG].AsDouble()) {
+      if(args[EVALUE_FLAG].AsDouble())
         opts->SetEvalueThreshold(args[EVALUE_FLAG].AsDouble());
-      }
       opts->Validate();
 
       // TODO: try with previously defined object manager
@@ -298,11 +298,8 @@ SearchApp::Run(void)
       CScope fine_blast_scope(*fine_blast_objmgr);
       TSeqLocVector target_from_str = input_from_str.GetAllSeqLocs(fine_blast_scope);
 
-      // run fine blast for each query.
-      for (unsigned int i = 0; i < query_loc.size(); i++) {
-        CBl2Seq blaster_from_str(query_loc[0], target_from_str, *opts);
-        TSeqAlignVector results_from_str(blaster_from_str.Run());
-      }
+      CBl2Seq blaster_from_str(query_loc[query_idx], target_from_str, *opts);
+      TSeqAlignVector results_from_str(blaster_from_str.Run());
 
       // TODOS:
       // Implement a timer.
@@ -349,7 +346,8 @@ SearchApp::getReferenceSequence(string& outstr, CRef<CSeqDBExpert> blastDb, int 
       queries.push_back(blastdb_seqid);
     } else {
       ITERATE(vector<int>, gi, gis) {
-        queries.push_back(CRef<CBlastDBSeqId>(new CBlastDBSeqId(NStr::IntToString(*gi))));
+        queries.push_back(CRef<CBlastDBSeqId>
+          (new CBlastDBSeqId(NStr::IntToString(*gi))));
       }
     }
   }
