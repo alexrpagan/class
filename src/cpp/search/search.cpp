@@ -86,7 +86,6 @@ private:
   fs::path getVDBFilePath(const string vdb_dir);
   Genotypes SlurpGenotypes(const string vdb_dir);
   void PrintErrorMessages(CSearchResults &queryResult);
-  void PrintQueryResult(CSearchResults &queryResult);
   string getRegion(string chr, int start, int end);
   Bitmap bitmapFromArray(vector<size_t> array);
   void getReferenceSequence(string &outstr, CRef<CSeqDBExpert> blastDb, int start, int end);
@@ -263,7 +262,6 @@ SearchApp::Run(void)
 
       // TODOS:
       // Implement a timer.
-      // Construct FASTA strings from unique variant sets
       // Run fine blast
       // Report results.
     }
@@ -380,18 +378,6 @@ SearchApp::RunBlast(string dbname, TSeqLocVector query_loc, CRef<CBlastOptionsHa
   CRef<IQueryFactory> query_factory(new CObjMgr_QueryFactory(query_loc));
   CLocalBlast blaster(query_factory, opts, target_db);
   return *blaster.Run();
-}
-
-void
-SearchApp::PrintQueryResult(CSearchResults &queryResult)
-{
-  const list<CRef<CSeq_align> > &seqAlignList = queryResult.GetSeqAlign()->Get();
-  ITERATE(list <CRef<CSeq_align> >, seqAlignIter, seqAlignList) {
-    cout << "start-stop (target): id "
-      << (*seqAlignIter)->GetSeq_id(1).GetSeqIdString()
-      << " " << (*seqAlignIter)->GetSeqStart(1)
-      << "-" << (*seqAlignIter)->GetSeqStop(1) << endl;
-  }
 }
 
 void
