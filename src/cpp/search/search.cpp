@@ -24,7 +24,6 @@
 #include <algo/blast/api/objmgr_query_data.hpp>
 #include <algo/blast/api/blast_options_handle.hpp>
 #include <algo/blast/api/blast_nucl_options.hpp>
-#include <algo/blast/api/blast_prot_options.hpp>
 
 #include <algo/blast/blastinput/blast_input.hpp>
 #include <algo/blast/blastinput/blast_fasta_input.hpp>
@@ -50,6 +49,7 @@ namespace {
   const string EVALUE_FLAG        = "evalue";
   const string INPUT_FLAG         = "in";
   const string CHR_FLAG           = "chr";
+  const string REF_FLAG           = "ref";
   const string VDB_FLAG           = "vdb";
   const string DB_FLAG            = "db";
 
@@ -96,6 +96,9 @@ CSearchApplication::Init(void)
 
   arg_desc->AddKey(VDB_FLAG, "VDB",
     "Location of variant database", CArgDescriptions::eString);
+
+  arg_desc->AddKey(REF_FLAG, "Reference",
+    "Location of reference genome", CArgDescriptions::eString);
 
   arg_desc->AddKey(CHR_FLAG, "chr",
     "The chromosome to blast over", CArgDescriptions::eString);
@@ -191,7 +194,6 @@ CSearchApplication::Run(void)
 
       map<vector<size_t>, boost::shared_ptr<vector<string> > > variant_genotypes;
 
-      // TODO: parallelize this step
       for (Genotypes::iterator it = genotypes.begin(); it != genotypes.end(); ++it) {
         Bitmap and_result;
         it->second->logicaland(variant_filter, and_result);
@@ -205,12 +207,12 @@ CSearchApplication::Run(void)
         variant_genotypes[bits_set]->push_back(it->first);
       }
 
-      map<vector<size_t>, boost::shared_ptr<vector<string> > >::iterator it   = variant_genotypes.begin();
+      map<vector<size_t>, boost::shared_ptr<vector<string> > >::iterator it = variant_genotypes.begin();
 
-      cout << variant_filter.numberOfOnes() << " variants (total) " << endl;
-      for(; it != variant_genotypes.end(); ++it) {
-        cout << bitmapFromArray(it->first) << " variants : " << it->second->size() << " genomes " << endl;
-      }
+      // cout << variant_filter.numberOfOnes() << " variants (total) " << endl;
+      // for(; it != variant_genotypes.end(); ++it) {
+      //   cout << bitmapFromArray(it->first) << " variants : " << it->second->size() << " genomes " << endl;
+      // }
 
       // Construct FASTA strings from unique variant sets
 
