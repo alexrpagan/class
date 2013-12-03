@@ -279,6 +279,7 @@ SearchApp::getVariantSequence(Rows variants, string reference, int startPos) {
     int pos = atoi(((*it)[3]).c_str()) - startPos - 1;
     string ref = (*it)[4];
     string alt = (*it)[5];
+    outstr.replace(pos, ref.size(), alt);
   }
   return outstr;
 }
