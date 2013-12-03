@@ -2,6 +2,7 @@
 
 #include <fstream>
 #include <sstream>
+#include <cassert>
 
 #include "ewah.h"
 #include "tabix.hpp"
@@ -88,7 +89,8 @@ private:
   void PrintQueryResult(CSearchResults &queryResult);
   string getRegion(string chr, int start, int end);
   Bitmap bitmapFromArray(vector<size_t> array);
-  string getReferenceSequence(CRef<CSeqDBExpert> blastDb, int start, int end);
+  void getReferenceSequence(string &outstr, CRef<CSeqDBExpert> blastDb, int start, int end);
+  string getVariantSequence(Rows variants, string reference, int startPos);
 
 };
 
@@ -204,17 +206,19 @@ SearchApp::Run(void)
 
     ITERATE(list <CRef<CSeq_align> >, seqAlignIter, seqAlignList) {
 
+      // TODO: what's the different in indexing?
       int start = (*seqAlignIter)->GetSeqStart(1);
       int stop  = (*seqAlignIter)->GetSeqStop(1);
 
-      string region = getRegion(chr, start, stop);
-
-      cout << region << endl;
-      cout << getReferenceSequence(blastDbReader, start, stop) << endl;
+      cout << start << "-" << stop << endl;
+      string refSeq;
+      getReferenceSequence(refSeq, blastDbReader, start, stop);
 
       // TODO: extract this into a method
       Rows variants;
       string line;
+      // NB: variant DB positions are 1-indexed.
+      string region = getRegion(chr, start+1, stop);
       vdb.setRegion(region);
       while(vdb.getNextLine(line)) {
         Row row;
@@ -226,14 +230,15 @@ SearchApp::Run(void)
         variants.push_back(row);
       }
 
+      map<size_t, Row> variantsByBit;
       Bitmap variant_filter;
       for (Rows::iterator it = variants.begin(); it != variants.end(); ++it) {
-        int idx = atoi((*it)[1].c_str());
+        size_t idx = atoi((*it)[1].c_str());
         variant_filter.set(idx);
+        variantsByBit.insert(make_pair(idx, *it));
       }
 
       map<vector<size_t>, boost::shared_ptr<vector<string> > > variant_genotypes;
-
       for (Genotypes::iterator it = genotypes.begin(); it != genotypes.end(); ++it) {
         Bitmap and_result;
         it->second->logicaland(variant_filter, and_result);
@@ -246,6 +251,17 @@ SearchApp::Run(void)
         }
         variant_genotypes[bits_set]->push_back(it->first);
       }
+
+      map<vector<size_t>, boost::shared_ptr<vector<string> > >::iterator it = variant_genotypes.begin();
+
+      for(; it != variant_genotypes.end(); ++it) {
+        Rows variants;
+        for(unsigned int i = 0; i < (it->first).size(); ++i) {
+          variants.push_back(variantsByBit[(it->first)[i]]);
+        }
+        cout << getVariantSequence(variants, refSeq, start) << endl;
+      }
+
       // TODOS:
       // Implement a timer.
       // Construct FASTA strings from unique variant sets
@@ -258,7 +274,18 @@ SearchApp::Run(void)
 }
 
 string
-SearchApp::getReferenceSequence(CRef<CSeqDBExpert> blastDb, int start, int end) {
+SearchApp::getVariantSequence(Rows variants, string reference, int startPos) {
+  string outstr = reference;
+  for (Rows::iterator it = variants.begin(); it != variants.end(); ++it) {
+    int pos = atoi(((*it)[3]).c_str()) - startPos - 1;
+    string ref = (*it)[4];
+    string alt = (*it)[5];
+  }
+  return outstr;
+}
+
+void
+SearchApp::getReferenceSequence(string& outstr, CRef<CSeqDBExpert> blastDb, int start, int end) {
   CNcbiOstrstream out;
   TSeqRange range(start, end);
   CSeqFormatterConfig conf;
@@ -290,16 +317,15 @@ SearchApp::getReferenceSequence(CRef<CSeqDBExpert> blastDb, int start, int end) 
 
   // convert from NCBI-land
   stringstream ss(out.str());
-  stringstream os;
   string line;
+  outstr.clear();
   for (int i = 0; getline(ss, line); ++i) {
     if (i != 0) {
       for (string::iterator it = line.begin(); it != line.end(); ++it) {
-        if (isValidNuc(*it)) os << *it;
+        if (isValidNuc(*it)) outstr.push_back(*it);
       }
     }
   }
-  return os.str();
 }
 
 Bitmap
