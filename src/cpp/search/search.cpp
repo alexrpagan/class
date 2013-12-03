@@ -78,7 +78,7 @@ private:
   void PrintErrorMessages(CSearchResults &queryResult);
   void PrintQueryResult(CSearchResults &queryResult);
   string getRegion(string chr, int start, int end);
-  Rows getVariantsInRegion(Tabix vdb, string region);
+  Bitmap bitmapFromArray(vector<size_t> array);
 
 };
 
@@ -156,6 +156,12 @@ CSearchApplication::Run(void)
     CSearchResults &queryResult = results[i];
     PrintErrorMessages(queryResult);
     const list<CRef<CSeq_align> > &seqAlignList = queryResult.GetSeqAlign()->Get();
+
+    if (seqAlignList.size() > 1000) {
+      cout << "punted query " << i << endl;
+      continue;
+    }
+
     ITERATE(list <CRef<CSeq_align> >, seqAlignIter, seqAlignList) {
 
       int start = (*seqAlignIter)->GetSeqStart(1);
@@ -164,11 +170,47 @@ CSearchApplication::Run(void)
 
       cout << region << endl;
 
-      Rows variants = getVariantsInRegion(vdb, region);
+      Rows variants;
+      string line;
+      vdb.setRegion(region);
+      while(vdb.getNextLine(line)) {
+        Row row;
+        stringstream ss(line);
+        string cell;
+        while(getline(ss, cell, '\t')) {
+          row.push_back(cell);
+        }
+        variants.push_back(row);
+      }
 
-      // TODO: which individuals have which variants?
+      Bitmap variant_filter;
+      for (Rows::iterator it = variants.begin(); it != variants.end(); ++it) {
+        int idx = atoi((*it)[1].c_str());
+        variant_filter.set(idx);
+      }
 
-      // Map unique variant sets to individuals
+      map<vector<size_t>, boost::shared_ptr<vector<string> > > variant_genotypes;
+
+      // TODO: parallelize this step
+      for (Genotypes::iterator it = genotypes.begin(); it != genotypes.end(); ++it) {
+        Bitmap and_result;
+        it->second->logicaland(variant_filter, and_result);
+        vector<size_t> bits_set = and_result.toArray();
+
+        if (variant_genotypes.find(bits_set) == variant_genotypes.end()) {
+          boost::shared_ptr<vector<string> > vec(new vector<string>());
+          variant_genotypes.insert(make_pair(bits_set, vec));
+        }
+
+        variant_genotypes[bits_set]->push_back(it->first);
+      }
+
+      map<vector<size_t>, boost::shared_ptr<vector<string> > >::iterator it   = variant_genotypes.begin();
+
+      cout << variant_filter.numberOfOnes() << " variants (total) " << endl;
+      for(; it != variant_genotypes.end(); ++it) {
+        cout << bitmapFromArray(it->first) << " variants : " << it->second->size() << " genomes " << endl;
+      }
 
       // Construct FASTA strings from unique variant sets
 
@@ -182,21 +224,13 @@ CSearchApplication::Run(void)
   return SUCCESS;
 }
 
-Rows
-CSearchApplication::getVariantsInRegion(Tabix vdb, string region) {
-  Rows variants;
-  string line;
-  vdb.setRegion(region);
-  while(vdb.getNextLine(line)) {
-    Row row;
-    stringstream ss(line);
-    string cell;
-    while(getline(ss, cell, '\t')) {
-      row.push_back(cell);
-    }
-    variants.push_back(row);
+Bitmap
+CSearchApplication::bitmapFromArray(vector<size_t> array) {
+  Bitmap bits;
+  for (unsigned int i = 0; i < array.size(); ++i) {
+    bits.set(array[i]);
   }
-  return variants;
+  return bits;
 }
 
 string
