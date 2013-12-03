@@ -206,7 +206,6 @@ SearchApp::Run(void)
 
     ITERATE(list <CRef<CSeq_align> >, seqAlignIter, seqAlignList) {
 
-      // TODO: what's the different in indexing?
       int start = (*seqAlignIter)->GetSeqStart(1);
       int stop  = (*seqAlignIter)->GetSeqStop(1);
 
