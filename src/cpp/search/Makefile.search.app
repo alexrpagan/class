@@ -3,7 +3,8 @@ APP = search
 SRC = search
 
 EWAH_ROOT=../../../ewah
-TABIX_ROOT=../../../vcflib/tabixpp
+VCFLIB_ROOT=../../../vcflib
+TABIX_ROOT=$(VCFLIB_ROOT)/tabixpp
 
 LIB_ = $(BLAST_INPUT_LIBS) $(BLAST_LIBS) $(OBJMGR_LIBS)
 LIB = tabix boost_system boost_filesystem $(LIB_:%=%$(STATIC))
