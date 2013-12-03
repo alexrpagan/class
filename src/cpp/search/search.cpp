@@ -88,9 +88,34 @@ private:
   void PrintQueryResult(CSearchResults &queryResult);
   string getRegion(string chr, int start, int end);
   Bitmap bitmapFromArray(vector<size_t> array);
-  void getReferenceSequence(CNcbiOstream& out, CRef<CSeqDBExpert> blastDb, int start, int end);
+  string getReferenceSequence(CRef<CSeqDBExpert> blastDb, int start, int end);
 
 };
+
+inline bool isValidNuc(char c)
+{
+  switch(c) {
+  case 'A':
+  case 'C':
+  case 'G':
+  case 'T':
+  case 'U':
+  case 'R':
+  case 'Y':
+  case 'S':
+  case 'W':
+  case 'K':
+  case 'M':
+  case 'B':
+  case 'D':
+  case 'H':
+  case 'V':
+  case 'N':
+    return true;
+  default:
+    return false;
+  }
+}
 
 void
 SearchApp::Init(void)
@@ -184,12 +209,8 @@ SearchApp::Run(void)
 
       string region = getRegion(chr, start, stop);
 
-      // Where are the random characters coming from?
-      CNcbiOstrstream ss;
-      getReferenceSequence(ss, blastDbReader, start, stop);
-
       cout << region << endl;
-      cout << ss.str() << endl << endl;
+      cout << getReferenceSequence(blastDbReader, start, stop) << endl;
 
       // TODO: extract this into a method
       Rows variants;
@@ -227,7 +248,6 @@ SearchApp::Run(void)
       }
       // TODOS:
       // Implement a timer.
-      // Strip headers off of FASTA strings
       // Construct FASTA strings from unique variant sets
       // Run fine blast
       // Report results.
@@ -237,8 +257,9 @@ SearchApp::Run(void)
   return SUCCESS;
 }
 
-void
-SearchApp::getReferenceSequence(CNcbiOstream& out, CRef<CSeqDBExpert> blastDb, int start, int end) {
+string
+SearchApp::getReferenceSequence(CRef<CSeqDBExpert> blastDb, int start, int end) {
+  CNcbiOstrstream out;
   TSeqRange range(start, end);
   CSeqFormatterConfig conf;
   conf.m_SeqRange = range;
@@ -266,6 +287,19 @@ SearchApp::getReferenceSequence(CNcbiOstream& out, CRef<CSeqDBExpert> blastDb, i
   NON_CONST_ITERATE(TQueries, itr, queries) {
     seq_fmt.Write(**itr);
   }
+
+  // convert from NCBI-land
+  stringstream ss(out.str());
+  stringstream os;
+  string line;
+  for (int i = 0; getline(ss, line); ++i) {
+    if (i != 0) {
+      for (string::iterator it = line.begin(); it != line.end(); ++it) {
+        if (isValidNuc(*it)) os << *it;
+      }
+    }
+  }
+  return os.str();
 }
 
 Bitmap
