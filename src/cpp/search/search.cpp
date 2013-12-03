@@ -83,13 +83,20 @@ private:
   virtual void Exit(void);
 
   CSearchResultSet RunBlast(string dbname, TSeqLocVector query_loc, CRef<CBlastOptionsHandle> opts);
+
   fs::path getVDBFilePath(const string vdb_dir);
+
   Genotypes SlurpGenotypes(const string vdb_dir);
-  void PrintErrorMessages(CSearchResults &queryResult);
+
   string getRegion(string chr, int start, int end);
+
   Bitmap bitmapFromArray(vector<size_t> array);
+
+  void PrintErrorMessages(CSearchResults &queryResult);
+
   void getReferenceSequence(string &outstr, CRef<CSeqDBExpert> blastDb, int start, int end);
-  string getVariantSequence(Rows variants, string reference, int startPos);
+
+  void getVariantSequence(string &outstr, Rows variants, string &reference, int startPos);
 
 };
 
@@ -170,6 +177,7 @@ SearchApp::Run(void)
 
   // this chunk of madness prepares the query file.
   SDataLoaderConfig dlconfig(IS_PROTEIN);
+
   CBlastInputSourceConfig iconfig(dlconfig);
   CBlastFastaInputSource fasta_input(args[INPUT_FLAG].AsInputFile(), iconfig);
   CScope scope(*objmgr);
@@ -208,7 +216,7 @@ SearchApp::Run(void)
       int start = (*seqAlignIter)->GetSeqStart(1);
       int stop  = (*seqAlignIter)->GetSeqStop(1);
 
-      cout << start << "-" << stop << endl;
+      //cout << start << "-" << stop << endl;
       string refSeq;
       getReferenceSequence(refSeq, blastDbReader, start, stop);
 
@@ -251,40 +259,79 @@ SearchApp::Run(void)
       }
 
       map<vector<size_t>, boost::shared_ptr<vector<string> > >::iterator it = variant_genotypes.begin();
-
+      list<string> fine_blast_targets;
       for(; it != variant_genotypes.end(); ++it) {
         Rows variants;
         for(unsigned int i = 0; i < (it->first).size(); ++i) {
           variants.push_back(variantsByBit[(it->first)[i]]);
         }
-        cout << getVariantSequence(variants, refSeq, start) << endl;
+        string varSeq;
+        getVariantSequence(varSeq, variants, refSeq, start);
+        fine_blast_targets.push_back(varSeq);
+      }
+
+      stringstream fine_blast_input_ss;
+      int i = 0;
+      for (list<string>::iterator it = fine_blast_targets.begin(); it != fine_blast_targets.end(); ++it, ++i) {
+        fine_blast_input_ss << ">SEQ" << i << endl;
+        fine_blast_input_ss << *it << endl;
+      }
+
+      string fine_blast_input_str = fine_blast_input_ss.str();
+
+      //trim trailing endl to make fasta parser happy.
+      fine_blast_input_str.erase(fine_blast_input_str.length() - 1, 1);
+
+      if(args[EVALUE_FLAG].AsDouble()) {
+        opts->SetEvalueThreshold(args[EVALUE_FLAG].AsDouble());
+      }
+      opts->Validate();
+
+      // TODO: try with previously defined object manager
+      CRef<CObjectManager> fine_blast_objmgr = CObjectManager::GetInstance();
+      if (!fine_blast_objmgr) {
+        throw std::runtime_error("Could not initialize fine blast object manager");
+      }
+
+      CBlastFastaInputSource fine_blast_input(fine_blast_input_str, iconfig);
+      CBlastInput input_from_str(&fine_blast_input);
+      CScope fine_blast_scope(*fine_blast_objmgr);
+      TSeqLocVector target_from_str = input_from_str.GetAllSeqLocs(fine_blast_scope);
+
+      // run fine blast for each query.
+      for (unsigned int i = 0; i < query_loc.size(); i++) {
+        CBl2Seq blaster_from_str(query_loc[0], target_from_str, *opts);
+        TSeqAlignVector results_from_str(blaster_from_str.Run());
       }
 
       // TODOS:
       // Implement a timer.
-      // Run fine blast
       // Report results.
+      // Which criteria does CABlast use to check hits?
+      // How do we check accuracy? Requires full blast.
+      // Do we need to perform fine blast over a wider sample of reference genome? Consult CABlast.
+
     }
   }
 
   return SUCCESS;
 }
 
-string
-SearchApp::getVariantSequence(Rows variants, string reference, int startPos) {
-  string outstr = reference;
+void
+SearchApp::getVariantSequence(string &outstr, Rows variants, string &reference, int startPos) {
+  outstr = reference;
   for (Rows::iterator it = variants.begin(); it != variants.end(); ++it) {
     int pos = atoi(((*it)[3]).c_str()) - startPos - 1;
     string ref = (*it)[4];
     string alt = (*it)[5];
     outstr.replace(pos, ref.size(), alt);
   }
-  return outstr;
 }
 
 void
 SearchApp::getReferenceSequence(string& outstr, CRef<CSeqDBExpert> blastDb, int start, int end) {
   CNcbiOstrstream out;
+
   TSeqRange range(start, end);
   CSeqFormatterConfig conf;
   conf.m_SeqRange = range;
