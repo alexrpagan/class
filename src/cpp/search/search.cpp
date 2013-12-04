@@ -260,7 +260,7 @@ SearchApp::Run(void)
       }
 
       map<vector<size_t>, boost::shared_ptr<vector<string> > >::iterator it = variant_genotypes.begin();
-      list<string> fine_blast_targets;
+      vector<string> fine_blast_targets;
       for(; it != variant_genotypes.end(); ++it) {
         Rows variants;
         for(unsigned int variant_idx = 0; variant_idx < (it->first).size(); ++variant_idx) {
@@ -272,10 +272,9 @@ SearchApp::Run(void)
       }
 
       stringstream fine_blast_input_ss;
-      int seq_idx = 0;
-      for (list<string>::iterator it = fine_blast_targets.begin(); it != fine_blast_targets.end(); ++it, ++seq_idx) {
+      for (unsigned int seq_idx = 0; seq_idx < fine_blast_targets.size(); ++seq_idx) {
         fine_blast_input_ss << ">SEQ" << seq_idx << endl;
-        fine_blast_input_ss << *it << endl;
+        fine_blast_input_ss << fine_blast_targets[seq_idx] << endl;
       }
 
       string fine_blast_input_str = fine_blast_input_ss.str();
@@ -298,13 +297,26 @@ SearchApp::Run(void)
       CScope fine_blast_scope(*fine_blast_objmgr);
       TSeqLocVector target_from_str = input_from_str.GetAllSeqLocs(fine_blast_scope);
 
-      CBl2Seq blaster_from_str(query_loc[query_idx], target_from_str, *opts);
-      TSeqAlignVector results_from_str(blaster_from_str.Run());
+      CBl2Seq fine_blaster(query_loc[query_idx], target_from_str, *opts);
+      TSeqAlignVector fine_results(fine_blaster.Run());
+
+      for (unsigned int fine_hit_idx = 0; fine_hit_idx < fine_results.size(); ++fine_hit_idx) {
+        CConstRef<CSeq_align_set> fine_align_set = fine_results[fine_hit_idx];
+        const list <CRef<CSeq_align> > &fine_align_list = fine_align_set->Get();
+        ITERATE(list<CRef<CSeq_align> >, fine_iter, fine_align_list) {
+          int sequence_idx = atoi((*fine_iter)->GetSeq_id(1).GetSeqIdString().c_str()) - 1;
+          int fine_start   = (*fine_iter)->GetSeqStart(1);
+          int fine_stop    = (*fine_iter)->GetSeqStop(1);
+          cout << fine_blast_targets[sequence_idx] << endl;
+          cout << fine_start << "-" << fine_stop << endl;
+        }
+      }
 
       // TODOS:
       // Implement a timer.
-      // Report results.
       // Which criteria does CABlast use to check hits?
+      // What are appropriate e-values?
+      // generate queries
       // How do we check accuracy? Requires full blast.
       // Do we need to perform fine blast over a wider sample of reference genome? Consult CABlast.
 
