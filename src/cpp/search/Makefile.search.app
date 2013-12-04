@@ -1,6 +1,6 @@
 ###  BASIC PROJECT SETTINGS
 APP = search
-SRC = search
+SRC = search timer
 
 EWAH_ROOT=../../../ewah
 VCFLIB_ROOT=../../../vcflib

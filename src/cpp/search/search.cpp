@@ -3,7 +3,10 @@
 #include <fstream>
 #include <sstream>
 #include <cassert>
+#include <numeric>
+#include <cmath>
 
+#include "timer.cpp"
 #include "ewah.h"
 #include "tabix.hpp"
 
@@ -62,6 +65,7 @@ namespace {
   const string CHR_FLAG           = "chr";
   const string VDB_FLAG           = "vdb";
   const string DB_FLAG            = "db";
+  const string PERF_FLAG          = "p";
 
   const string VDB_BASE_FILENAME = "vt";
   const string VDB_FILENAME = "vt.db.gz";
@@ -80,6 +84,7 @@ class SearchApp : public CNcbiApplication
 {
 private:
 
+  Timer _timer;
   virtual void Init(void);
   virtual int  Run(void);
   virtual void Exit(void);
@@ -99,6 +104,8 @@ private:
   void getReferenceSequence(string &outstr, CRef<CSeqDBExpert> blastDb, int start, int end);
 
   void getVariantSequence(string &outstr, Rows variants, string &reference, int startPos);
+
+  void reportPerf(string label, vector<double>& samples);
 
 };
 
@@ -154,6 +161,8 @@ SearchApp::Init(void)
   arg_desc->AddDefaultKey(COARSE_EVALUE_FLAG, "CoarseEvalue",
     "E-value threshold for coarse search against reference sequence", CArgDescriptions::eDouble, "1e-20");
 
+  arg_desc->AddFlag(PERF_FLAG, "Report performance data", false);
+
   SetupArgDescriptions(arg_desc.release());
 
 }
@@ -166,6 +175,8 @@ SearchApp::Run(void)
   EProgram program = ProgramNameToEnum(BLAST_PROGRAM);
 
   CRef<CBlastOptionsHandle> opts(CBlastOptionsFactory::Create(program));
+
+  bool report_perf = args[PERF_FLAG];
 
   if(args[COARSE_EVALUE_FLAG].AsDouble()) {
     opts->SetEvalueThreshold(args[COARSE_EVALUE_FLAG].AsDouble());
@@ -192,7 +203,11 @@ SearchApp::Run(void)
 
   // TODO: consider making these members.
 
+  _timer.update_time();
   Genotypes genotypes = SlurpGenotypes(vdbpath);
+  if( report_perf ) {
+    cerr << "Reading bitvectors: " << _timer.update_time() << endl << endl;
+  }
 
   string vdb_file_name = getVDBFilePath(vdbpath).string();
   Tabix vdb(vdb_file_name);
@@ -200,8 +215,17 @@ SearchApp::Run(void)
   CRef<CSeqDBExpert> blastDbReader;
   blastDbReader.Reset(new CSeqDBExpert(dbname, CSeqDB::eNucleotide));
 
+  _timer.update_time();
   // coarse blast.
   CSearchResultSet results = RunBlast(dbname, query_loc, opts);
+  if( report_perf ) {
+    cerr << "Coarse Blast: " << _timer.update_time() << endl << endl;
+  }
+
+  vector<double> ref_seq_retrieval_times;
+  vector<double> variant_fetch_times;
+  vector<double> variant_filter_times;
+  vector<double> fine_blast_times;
 
   for (unsigned int query_idx = 0; query_idx < results.GetNumResults(); query_idx++) {
     CSearchResults &queryResult = results[query_idx];
@@ -209,7 +233,7 @@ SearchApp::Run(void)
     const list<CRef<CSeq_align> > &seqAlignList = queryResult.GetSeqAlign()->Get();
 
     if (seqAlignList.size() > PUNT_THRESH) {
-      cout << "punted query " << query_idx << endl;
+      cerr << "punted query " << query_idx << endl;
       continue;
     }
 
@@ -218,14 +242,18 @@ SearchApp::Run(void)
       int start = (*seqAlignIter)->GetSeqStart(1);
       int stop  = (*seqAlignIter)->GetSeqStop(1);
 
+      _timer.update_time();
       string refSeq;
       getReferenceSequence(refSeq, blastDbReader, start, stop);
+      ref_seq_retrieval_times.push_back(_timer.update_time());
 
       // TODO: extract this into a method
       Rows variants;
       string line;
       // NB: variant DB positions are 1-indexed.
       string region = getRegion(chr, start+1, stop);
+
+      _timer.update_time();
       vdb.setRegion(region);
       while(vdb.getNextLine(line)) {
         Row row;
@@ -236,6 +264,7 @@ SearchApp::Run(void)
         }
         variants.push_back(row);
       }
+      variant_fetch_times.push_back(_timer.update_time());
 
       map<size_t, Row> variantsByBit;
       Bitmap variant_filter;
@@ -245,6 +274,7 @@ SearchApp::Run(void)
         variantsByBit.insert(make_pair(idx, *it));
       }
 
+      _timer.update_time();
       map<vector<size_t>, boost::shared_ptr<vector<string> > > variant_genotypes;
       for (Genotypes::iterator it = genotypes.begin(); it != genotypes.end(); ++it) {
         Bitmap and_result;
@@ -258,7 +288,10 @@ SearchApp::Run(void)
         }
         variant_genotypes[bits_set]->push_back(it->first);
       }
+      variant_filter_times.push_back(_timer.update_time());
 
+
+      _timer.update_time();
       map<vector<size_t>, boost::shared_ptr<vector<string> > >::iterator it = variant_genotypes.begin();
       vector<string> fine_blast_targets;
       for(; it != variant_genotypes.end(); ++it) {
@@ -299,6 +332,7 @@ SearchApp::Run(void)
 
       CBl2Seq fine_blaster(query_loc[query_idx], target_from_str, *opts);
       TSeqAlignVector fine_results(fine_blaster.Run());
+      fine_blast_times.push_back(_timer.update_time());
 
       for (unsigned int fine_hit_idx = 0; fine_hit_idx < fine_results.size(); ++fine_hit_idx) {
         CConstRef<CSeq_align_set> fine_align_set = fine_results[fine_hit_idx];
@@ -313,7 +347,6 @@ SearchApp::Run(void)
       }
 
       // TODOS:
-      // Implement a timer.
       // Which criteria does CABlast use to check hits?
       // What are appropriate e-values?
       // generate queries
@@ -323,7 +356,28 @@ SearchApp::Run(void)
     }
   }
 
+  if (report_perf) {
+    reportPerf("Retrieving reference subseqence",     ref_seq_retrieval_times);
+    reportPerf("Fetching overlapping variants",       variant_fetch_times);
+    reportPerf("Bitwise-and over variant BVs",        variant_filter_times);
+    reportPerf("Initializing and running fine blast", fine_blast_times);
+  }
+
   return SUCCESS;
+}
+
+void
+SearchApp::reportPerf(string label, vector<double> &samples) {
+  double sum = accumulate(samples.begin(), samples.end(), 0.0);
+  double mean = sum / samples.size();
+  double sq_sum = inner_product(samples.begin(), samples.end(), samples.begin(), 0.0);
+  double stdev  = sqrt(sq_sum / samples.size() - mean * mean);
+  cerr << label << ":" << endl;
+  cerr << "samples: "  << samples.size() << endl;
+  cerr << "sum:     "  << sum    << endl;
+  cerr << "mean:    "  << mean   << endl;
+  cerr << "stdev:   "  << stdev  << endl;
+  cerr << endl;
 }
 
 void
