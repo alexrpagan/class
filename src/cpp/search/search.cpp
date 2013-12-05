@@ -5,6 +5,8 @@
 #include <cassert>
 #include <numeric>
 #include <cmath>
+#include <stdlib.h>
+#include <sys/sysinfo.h>
 
 #include "timer.cpp"
 #include "ewah.h"
@@ -84,7 +86,9 @@ class SearchApp : public CNcbiApplication
 {
 private:
 
+  bool _report_perf;
   Timer _timer;
+
   virtual void Init(void);
   virtual int  Run(void);
   virtual void Exit(void);
@@ -106,6 +110,8 @@ private:
   void getVariantSequence(string &outstr, Rows variants, string &reference, int startPos);
 
   void reportPerf(string label, vector<double>& samples);
+
+  pair<uint64_t, uint64_t> get_system_memory_info();
 
 };
 
@@ -176,7 +182,7 @@ SearchApp::Run(void)
 
   CRef<CBlastOptionsHandle> opts(CBlastOptionsFactory::Create(program));
 
-  bool report_perf = args[PERF_FLAG];
+  _report_perf = args[PERF_FLAG].AsBoolean();
 
   if(args[COARSE_EVALUE_FLAG].AsDouble()) {
     opts->SetEvalueThreshold(args[COARSE_EVALUE_FLAG].AsDouble());
@@ -205,8 +211,8 @@ SearchApp::Run(void)
 
   _timer.update_time();
   Genotypes genotypes = SlurpGenotypes(vdbpath);
-  if( report_perf ) {
-    cerr << "Reading bitvectors: " << _timer.update_time() << endl << endl;
+  if( _report_perf ) {
+    cerr << "Reading bitvectors: " << _timer.update_time() << endl ;
   }
 
   string vdb_file_name = getVDBFilePath(vdbpath).string();
@@ -215,12 +221,8 @@ SearchApp::Run(void)
   CRef<CSeqDBExpert> blastDbReader;
   blastDbReader.Reset(new CSeqDBExpert(dbname, CSeqDB::eNucleotide));
 
-  _timer.update_time();
   // coarse blast.
   CSearchResultSet results = RunBlast(dbname, query_loc, opts);
-  if( report_perf ) {
-    cerr << "Coarse Blast: " << _timer.update_time() << endl << endl;
-  }
 
   vector<double> ref_seq_retrieval_times;
   vector<double> variant_fetch_times;
@@ -228,6 +230,13 @@ SearchApp::Run(void)
   vector<double> fine_blast_times;
 
   for (unsigned int query_idx = 0; query_idx < results.GetNumResults(); query_idx++) {
+
+    pair<uint64_t, uint64_t> usage = get_system_memory_info();
+
+    cerr << "Processing query " << query_idx << endl;
+    cerr << "Free mem: " << usage.first  << endl;
+    cerr << "Used mem: " << usage.second << endl;
+
     CSearchResults &queryResult = results[query_idx];
     PrintErrorMessages(queryResult);
     const list<CRef<CSeq_align> > &seqAlignList = queryResult.GetSeqAlign()->Get();
@@ -347,16 +356,18 @@ SearchApp::Run(void)
       }
 
       // TODOS:
+      // Report individuals. (?)
       // Which criteria does CABlast use to check hits?
       // What are appropriate e-values?
-      // generate queries
-      // How do we check accuracy? Requires full blast.
-      // Do we need to perform fine blast over a wider sample of reference genome? Consult CABlast.
+      // Concat fasta filesa, create blastdb
+      // How do we check accuracy? Requires blast over full data.
+      // Do we need to perform fine blast over a wider sample of reference genome?
+      //    CABlast extends by 50 bases on either side. Do this.
 
     }
   }
 
-  if (report_perf) {
+  if ( _report_perf ) {
     reportPerf("Retrieving reference subseqence",     ref_seq_retrieval_times);
     reportPerf("Fetching overlapping variants",       variant_fetch_times);
     reportPerf("Bitwise-and over variant BVs",        variant_filter_times);
@@ -387,6 +398,15 @@ SearchApp::getVariantSequence(string &outstr, Rows variants, string &reference, 
     int pos = atoi(((*it)[3]).c_str()) - startPos - 1;
     string ref = (*it)[4];
     string alt = (*it)[5];
+    if (ref.size() + pos > reference.length()) {
+      cerr << "Can't replace string part!" << endl;
+      cerr << reference << endl;
+      cerr << pos       << endl;
+      for (unsigned int i = 0; i < (*it).size(); ++i) {
+        cerr << (*it)[i] << "\t";
+      }
+      cerr << endl;
+    }
     outstr.replace(pos, ref.size(), alt);
   }
 }
@@ -487,8 +507,20 @@ SearchApp::RunBlast(string dbname, TSeqLocVector query_loc, CRef<CBlastOptionsHa
 {
   const CSearchDatabase target_db(dbname, CSearchDatabase::eBlastDbIsNucleotide);
   CRef<IQueryFactory> query_factory(new CObjMgr_QueryFactory(query_loc));
+
+  _timer.update_time();
   CLocalBlast blaster(query_factory, opts, target_db);
-  return *blaster.Run();
+  if (_report_perf) {
+    cerr << "Coarse BLAST set-up: " << _timer.update_time() << endl;
+  }
+
+  _timer.update_time();
+  CSearchResultSet res = *blaster.Run();
+  if (_report_perf) {
+    cerr << "Coarse BLAST search: " << _timer.update_time() << endl;
+  }
+
+  return res;
 }
 
 void
@@ -506,6 +538,14 @@ SearchApp::PrintErrorMessages(CSearchResults &queryResult) {
         cerr << (*it)->GetMessage() << endl;
       }
     }
+}
+
+pair<uint64_t, uint64_t>
+SearchApp::get_system_memory_info()
+{
+  struct sysinfo inf;
+  sysinfo(&inf);
+  return make_pair(inf.mem_unit * inf.freeram, inf.mem_unit * inf.totalram);
 }
 
 void
