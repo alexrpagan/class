@@ -2,7 +2,6 @@
 
 #include <fstream>
 #include <sstream>
-#include <cassert>
 #include <numeric>
 #include <cmath>
 #include <stdlib.h>
@@ -17,6 +16,7 @@
 #include <corelib/ncbistre.hpp>
 #include <corelib/ncbienv.hpp>
 #include <corelib/ncbiargs.hpp>
+#include <corelib/ncbidbg.hpp>
 
 #include <objmgr/object_manager.hpp>
 
@@ -57,6 +57,8 @@ namespace {
   const int ERROR = 1;
 
   const unsigned int PUNT_THRESH = 1000;
+
+  const int FRINGE = 100;
 
   const bool IS_PROTEIN = false;
 
@@ -107,7 +109,7 @@ private:
 
   void getReferenceSequence(string &outstr, CRef<CSeqDBExpert> blastDb, int start, int end);
 
-  void getVariantSequence(string &outstr, Rows variants, string &reference, int startPos);
+  void getVariantSequence(string &outstr, CRef<CSeqDBExpert> blastDbReader, Rows variants, string &reference, int startPos);
 
   void reportPerf(string label, vector<double>& samples);
 
@@ -251,10 +253,27 @@ SearchApp::Run(void)
       int start = (*seqAlignIter)->GetSeqStart(1);
       int stop  = (*seqAlignIter)->GetSeqStop(1);
 
-      _timer.update_time();
+      int adj_start = (FRINGE < start) ? start - FRINGE : start;
+      int adj_stop  = (true)           ? stop  + FRINGE : stop; // TODO: fix this condition.
+      bool using_fringe = true;
+
       string refSeq;
-      getReferenceSequence(refSeq, blastDbReader, start, stop);
+
+      _timer.update_time();
+      try {
+        getReferenceSequence(refSeq, blastDbReader, adj_start, adj_stop);
+      } catch (...) {
+        using_fringe = false;
+        refSeq.clear();
+        getReferenceSequence(refSeq, blastDbReader, start, stop);
+      }
       ref_seq_retrieval_times.push_back(_timer.update_time());
+
+      if (using_fringe) {
+        assert(refSeq.length() == (stop - start + 1) + 2 * FRINGE);
+        start = adj_start;
+        stop  = adj_stop;
+      }
 
       // TODO: extract this into a method
       Rows variants;
@@ -299,7 +318,6 @@ SearchApp::Run(void)
       }
       variant_filter_times.push_back(_timer.update_time());
 
-
       _timer.update_time();
       map<vector<size_t>, boost::shared_ptr<vector<string> > >::iterator it = variant_genotypes.begin();
       vector<string> fine_blast_targets;
@@ -309,7 +327,13 @@ SearchApp::Run(void)
           variants.push_back(variantsByBit[(it->first)[variant_idx]]);
         }
         string varSeq;
-        getVariantSequence(varSeq, variants, refSeq, start);
+        getVariantSequence(
+          varSeq
+          , blastDbReader
+          , variants
+          , refSeq
+          , start
+        );
         fine_blast_targets.push_back(varSeq);
       }
 
@@ -359,10 +383,7 @@ SearchApp::Run(void)
       // Report individuals. (?)
       // Which criteria does CABlast use to check hits?
       // What are appropriate e-values?
-      // Concat fasta filesa, create blastdb
       // How do we check accuracy? Requires blast over full data.
-      // Do we need to perform fine blast over a wider sample of reference genome?
-      //    CABlast extends by 50 bases on either side. Do this.
 
     }
   }
@@ -392,13 +413,27 @@ SearchApp::reportPerf(string label, vector<double> &samples) {
 }
 
 void
-SearchApp::getVariantSequence(string &outstr, Rows variants, string &reference, int startPos) {
+SearchApp::getVariantSequence(string &outstr
+  , CRef<CSeqDBExpert> blastDbReader
+  , Rows variants
+  , string &reference
+  , int startPos
+) {
   outstr = reference;
   for (Rows::iterator it = variants.begin(); it != variants.end(); ++it) {
+
+    // variant info
     int pos = atoi(((*it)[3]).c_str()) - startPos - 1;
     string ref = (*it)[4];
     string alt = (*it)[5];
+
+    // make sure that the reference sequences line up
+    assert(reference.at(pos) == ref.at(0));
+
+    // if the section we're replacing is longer than the chunk of the
+    // reference sequence that we currently have.
     if (ref.size() + pos > reference.length()) {
+
       cerr << "Can't replace string part!" << endl;
       cerr << reference << endl;
       cerr << pos       << endl;
@@ -406,13 +441,23 @@ SearchApp::getVariantSequence(string &outstr, Rows variants, string &reference, 
         cerr << (*it)[i] << "\t";
       }
       cerr << endl;
+
+      return;
+      // TODO: fetch properly-sized sequence from reference database
+
     }
+
     outstr.replace(pos, ref.size(), alt);
   }
 }
 
 void
-SearchApp::getReferenceSequence(string& outstr, CRef<CSeqDBExpert> blastDb, int start, int end) {
+SearchApp::getReferenceSequence(string& outstr
+  , CRef<CSeqDBExpert> blastDb
+  , int start
+  , int end
+){
+
   CNcbiOstrstream out;
 
   TSeqRange range(start, end);
@@ -441,6 +486,7 @@ SearchApp::getReferenceSequence(string& outstr, CRef<CSeqDBExpert> blastDb, int 
   const string outfmt = "%f";
   CSeqFormatter seq_fmt(outfmt, *blastDb, out, conf);
   NON_CONST_ITERATE(TQueries, itr, queries) {
+    // can throw an exception; let it bubble out.
     seq_fmt.Write(**itr);
   }
 
@@ -455,6 +501,7 @@ SearchApp::getReferenceSequence(string& outstr, CRef<CSeqDBExpert> blastDb, int 
       }
     }
   }
+
 }
 
 Bitmap
