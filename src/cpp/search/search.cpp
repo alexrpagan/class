@@ -80,6 +80,31 @@ namespace {
 
 }
 
+inline bool isValidNuc(char c)
+{
+  switch(c) {
+  case 'A':
+  case 'C':
+  case 'G':
+  case 'T':
+  case 'U':
+  case 'R':
+  case 'Y':
+  case 'S':
+  case 'W':
+  case 'K':
+  case 'M':
+  case 'B':
+  case 'D':
+  case 'H':
+  case 'V':
+  case 'N':
+    return true;
+  default:
+    return false;
+  }
+}
+
 // TODO: move these typedefs into class def.
 typedef EWAHBoolArray<uint32_t> Bitmap;
 typedef map<string, boost::shared_ptr<Bitmap> > Genotypes;
@@ -87,6 +112,8 @@ typedef vector< CRef<CBlastDBSeqId> > TQueries;
 
 typedef vector<string> Row;
 typedef list<Row> Rows;
+
+class Variant;
 
 class SearchApp : public CNcbiApplication
 {
@@ -115,24 +142,69 @@ private:
   virtual void Exit(void);
 
   CSearchResultSet RunBlast(string dbname, TSeqLocVector query_loc, CRef<CBlastOptionsHandle> opts);
-
   fs::path getVDBFilePath(const string vdb_dir);
-
-  Genotypes SlurpGenotypes(const string vdb_dir);
-
   string getRegion(int start, int end);
-
   Bitmap bitmapFromArray(vector<size_t> array);
-
+  void slurpGenotypes(const string vdb_dir);
   void PrintErrorMessages(CSearchResults &queryResult);
-
-  void getVariantSequence(string &outstr, Rows variants, string &reference, int startPos);
-
+  void getVariantSequence(string &outstr, Rows &variants, int start, int end);
   void getReferenceSequence(string &outstr, int start, int end);
-
   void reportPerf(string label, vector<double>& samples);
+  void printVariant(Row &variant);
 
 };
+
+class Variant {
+public:
+  Variant() {}
+  Variant(Row &row) {
+    _chr = atoi(row[0].c_str());
+    _bit = atoi(row[1].c_str());
+    _pos = atoi(row[3].c_str()) - 1;
+    _ref = row[4];
+    _alt = row[5];
+    _type = row[2];
+  }
+
+  int GetChrom()   { return _chr;  }
+  int GetBit()     { return _bit;  }
+  int GetPos()     { return _pos;  }
+  string GetRef()  { return _ref;  }
+  string GetAlt()  { return _alt;  }
+  string GetType() { return _type; }
+
+  bool subsumes(Variant &var) {
+    return (var.GetBit() == (_bit + 1))
+      && (_ref.size() > var.GetRef().size())
+      && (_ref.find(var.GetRef()) != string::npos);
+  }
+
+  bool modifiesRef(Variant &var) {
+    if (_type == "SNP" && (var.GetType() == "SV" || var.GetType() == "INDEL")) {
+      return var.GetPos() == _pos;
+    }
+    return false;
+  }
+
+private:
+  int _chr;
+  int _bit;
+  int _pos;
+  string _ref;
+  string _alt;
+  string _type;
+
+};
+
+ostream& operator<<(ostream &strm, Variant &var) {
+  strm << var.GetChrom() << '\t';
+  strm << var.GetBit()   << '\t';
+  strm << var.GetPos()   << '\t';
+  strm << var.GetRef()   << '\t';
+  strm << var.GetAlt()   << '\t';
+  strm << var.GetType();
+  return strm;
+}
 
 // TODO: are nucs equivalent?
 
@@ -192,7 +264,7 @@ SearchApp::Run(void)
   _verbose     = args[VERBOSE_FLAG].AsBoolean();
 
   _timer.update_time();
-  _genotypes = SlurpGenotypes(vdbpath);
+  slurpGenotypes(vdbpath);
   if( _report_perf ) {
     cerr << "Reading bitvectors: " << _timer.update_time() << endl ;
   }
@@ -250,24 +322,9 @@ SearchApp::Run(void)
       int adj_stop  = stop  + FRINGE;
       bool using_fringe = true;
 
-      string ref_seq;
-      _timer.update_time();
-      getReferenceSequence(ref_seq, adj_start, adj_stop);
-      _ref_seq_retrieval_times.push_back(_timer.update_time());
-
-      if (using_fringe) {
-        unsigned int length_with_fringe = (stop - start + 1) + 2 * FRINGE;
-        if (ref_seq.length() == length_with_fringe) {
-          start = adj_start;
-          stop  = adj_stop;
-        } else {
-          cerr << ref_seq << endl;
-          cerr << ref_seq.length() << " vs " << length_with_fringe << endl;
-          cerr << adj_start << "-" << adj_stop << " " << adj_stop - adj_start + 1 << endl;
-          cerr << start     << "-" << stop     << " " << stop - start + 1         << endl;
-          assert(false);
-        }
-      }
+      // TODO: clean this up
+      start = adj_start;
+      stop  = adj_stop;
 
       Rows variants;
       string line;
@@ -310,7 +367,6 @@ SearchApp::Run(void)
       }
       _variant_filter_times.push_back(_timer.update_time());
 
-      bool punt = false;
 
       map<vector<size_t>, boost::shared_ptr<vector<string> > >::iterator it = variant_genotypes.begin();
       vector<string> fine_blast_targets;
@@ -318,25 +374,18 @@ SearchApp::Run(void)
         Rows variants;
         for(unsigned int variant_idx = 0; variant_idx < (it->first).size(); ++variant_idx) {
           Row variant = variants_by_bit[(it->first)[variant_idx]];
-          if (variant[2] == "SV") {
-            cerr << "Hit contains an SV; punting!" << endl;
-            punt = true;
-            goto PUNT;
-          }
           variants.push_back(variant);
         }
         string var_seq;
         getVariantSequence(
             var_seq
           , variants
-          , ref_seq
-          , start
+          , adj_start
+          , adj_stop
         );
         fine_blast_targets.push_back(var_seq);
       }
 
-      PUNT:
-      if (punt) continue;
 
       // TODO: experiment with batching for fine blast!
       stringstream fine_blast_input_ss;
@@ -406,98 +455,92 @@ SearchApp::reportPerf(string label, vector<double> &samples) {
 }
 
 void
-SearchApp::getVariantSequence(string &outstr
-  , Rows variants
-  , string &reference
-  , int startPos
+SearchApp::getVariantSequence(
+    string &outbuf
+  , Rows &variants
+  , int ref_start_pos
+  , int ref_end_pos
 ) {
 
-  int offset = 0; // offset of output from reference sequence.
-  int max = -1;
+  // positions of last variant
+  int last_start = 0, last_end = ref_start_pos;
 
-  outstr = reference;
+  bool first = true;
+  Variant last_variant;
 
   for (Rows::iterator it = variants.begin(); it != variants.end(); ++it) {
 
-    Row variant = *it;
+    Variant variant(*it);
 
-    // if (offset != 0) {
-    //   cerr << "Trying to replace variant in length-modified string. bailing out!" << endl;
-    //   return;
-    // }
-
-    int bit = atoi(variant[1].c_str());
-
-    // assert that bits are montonically increasing
-    if(bit <= max) {
-      cerr << "something bad happened" << endl;
-      cerr << bit << " - " << max << endl;
-      assert(false);
+    if (first) {
+      last_variant = variant;
+      first = false;
     }
-    max = bit;
 
-    // position in ORIGINAL reference.
-    int pos = atoi(variant[3].c_str()) - startPos - 1;
+    if (variant.GetPos() < last_end) {
 
-    string ref = variant[4];  // substr to replace
-    string alt = variant[5];  // substr to replace with.
+      if (last_variant.subsumes(variant))    continue;
+      if (last_variant.modifiesRef(variant)) continue;
 
-    // the amount by which we're changing the length of output sequence in this step.
-    int len_mod = alt.length() - ref.length();
+      cerr << "Illegally overlapping or out-of-order variants:" << endl;
+      cerr << variant.GetPos() << " - " << last_end << endl;
+      for (Rows::iterator inner_it = variants.begin(); inner_it != variants.end(); ++inner_it) {
+        Variant tmp(*inner_it);
+        cerr << tmp << endl;
+      }
+      continue;
+      // assert(false);
 
-    int offset_pos = pos + offset;
+    }
 
-    // if the section we're replacing is longer than the chunk of the
-    // reference sequence that we currently have.
-    if (len_mod < 0 && (offset_pos + 1) + abs(len_mod) > outstr.length()) {
-      int tail_start = startPos + pos;
-      int tail_end   = tail_start + abs(len_mod) + FRINGE;
+    if (variant.GetAlt() != "<DEL>") {
 
-      if (_verbose) {
-        cerr << "Fetching more reference! " << tail_start << "-" << tail_end << endl;
+      string ref_before_var;
+
+      if (variant.GetPos() - last_end > 0) {
+        getReferenceSequence(ref_before_var, last_end, variant.GetPos());
       }
 
-      string tail;
-      getReferenceSequence(tail, tail_start, tail_end);
-
-      if(reference.at(pos) != tail.at(0)) {
-        cerr << "Variant num: " << variant[1] << endl;
-        cerr << "ALT len: " << alt.length() << endl;
-        cerr << "REF len: " << ref.length() << endl;
-        cerr << "len_mod: " << len_mod << endl;
-        cerr << startPos << endl;
-        cerr << reference.at(pos) << " - " << tail.at(0) << endl;
-        cerr << reference.substr(pos-1) << endl;
-        cerr << tail << endl;
-        assert(false);
+      string alt = variant.GetAlt();
+      for(string::iterator alt_it = alt.begin(); alt_it != alt.end(); ++alt_it) {
+        if(!isValidNuc(*alt_it)) {
+          cerr << "Something strange is up with this variant:" << endl;
+          cerr << variant << endl;
+          assert(false);
+        }
       }
 
-      outstr.erase(offset_pos + 1);
-      outstr.append(tail.substr(1));
+      outbuf.append(ref_before_var + variant.GetAlt());
     }
 
-    // basic sanity check -- variant lines up to original reference
-    assert(reference.at(pos) == ref.at(0));
+    last_start   = variant.GetPos();
+    last_end     = last_start + variant.GetRef().size();
+    last_variant = variant;
 
-    // insertion
-    if (alt.length() > 1) {
-      outstr.insert(offset_pos + 1, alt.substr(1));
-    } else {
-      outstr.replace(offset_pos, ref.size(), alt);
-    }
+  }
 
-    offset += len_mod;
-
+  if (last_end < ref_end_pos + 1) {
+    string endref;
+    getReferenceSequence(endref, last_end, ref_end_pos + 1);
+    outbuf += endref;
   }
 
 }
 
+
 void
 SearchApp::getReferenceSequence(string& outstr, int start, int end){
+  _timer.update_time();
   const int seq_len = end - start + 1;
   string seq = _fastaRef.getSubSequence(_chr_name, start, seq_len);
-  assert(seq.length() == seq_len);
+  if(seq.length() != seq_len) {
+    cerr << "start:  " << start << " - " << end << endl;
+    cerr << "seqlen: " << seq_len << endl;
+    cerr << "retseq: " << seq.length() << endl;
+    assert(false);
+  }
   outstr = seq;
+  _ref_seq_retrieval_times.push_back(_timer.update_time());
 }
 
 Bitmap
@@ -523,9 +566,8 @@ SearchApp::getVDBFilePath(const string vdb_dir) {
   return (db_path / vdb_name);
 }
 
-Genotypes
-SearchApp::SlurpGenotypes(const string vdb_dir) {
-  Genotypes genotypes;
+void
+SearchApp::slurpGenotypes(const string vdb_dir) {
   fs::directory_iterator end_iter;
   fs::path vdb_path(vdb_dir);
   fs::path vt_path(VDB_FILENAME);
@@ -538,11 +580,10 @@ SearchApp::SlurpGenotypes(const string vdb_dir) {
         in.open(dir_iter->path().string().c_str());
         bitmap->read(in);
         in.close();
-        genotypes.insert(make_pair(base.string(), bitmap));
+        _genotypes.insert(make_pair(base.string(), bitmap));
       }
     }
   }
-  return genotypes;
 }
 
 CSearchResultSet
