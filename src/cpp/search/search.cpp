@@ -10,6 +10,7 @@
 #include "timer.cpp"
 #include "ewah.h"
 #include "tabix.hpp"
+#include "Fasta.h"
 
 #include <ncbi_pch.hpp>
 #include <corelib/ncbiapp.hpp>
@@ -58,7 +59,8 @@ namespace {
 
   const unsigned int PUNT_THRESH = 1000;
 
-  const int FRINGE = 100;
+  const int FRINGE      = 100;
+  const int FASTA_WIDTH = 80;
 
   const bool IS_PROTEIN = false;
 
@@ -67,12 +69,14 @@ namespace {
   const string EVALUE_FLAG        = "evalue";
   const string INPUT_FLAG         = "in";
   const string CHR_FLAG           = "chr";
+  const string REF_FLAG           = "ref";
   const string VDB_FLAG           = "vdb";
   const string DB_FLAG            = "db";
   const string PERF_FLAG          = "p";
+  const string VERBOSE_FLAG       = "v";
 
-  const string VDB_BASE_FILENAME = "vt";
-  const string VDB_FILENAME = "vt.db.gz";
+  const string VDB_BASE_FILENAME  = "vt";
+  const string VDB_FILENAME       = "vt.db.gz";
 
 }
 
@@ -88,8 +92,23 @@ class SearchApp : public CNcbiApplication
 {
 private:
 
+  string _chr_name;
+
+  bool _verbose;
+
+  // perf
   bool _report_perf;
   Timer _timer;
+  vector<double> _ref_seq_retrieval_times;
+  vector<double> _variant_fetch_times;
+  vector<double> _variant_filter_times;
+  vector<double> _fine_blast_times;
+
+  // readers
+  FastaReference _fastaRef;
+
+  // bitvectors
+  Genotypes _genotypes;
 
   virtual void Init(void);
   virtual int  Run(void);
@@ -107,40 +126,15 @@ private:
 
   void PrintErrorMessages(CSearchResults &queryResult);
 
-  void getReferenceSequence(string &outstr, CRef<CSeqDBExpert> blastDb, int start, int end);
+  void getVariantSequence(string &outstr, Rows variants, string &reference, int startPos);
 
-  void getVariantSequence(string &outstr, CRef<CSeqDBExpert> blastDbReader, Rows variants, string &reference, int startPos);
+  void getReferenceSequence(string &outstr, int start, int end);
 
   void reportPerf(string label, vector<double>& samples);
 
-  pair<uint64_t, uint64_t> get_system_memory_info();
-
 };
 
-inline bool isValidNuc(char c)
-{
-  switch(c) {
-  case 'A':
-  case 'C':
-  case 'G':
-  case 'T':
-  case 'U':
-  case 'R':
-  case 'Y':
-  case 'S':
-  case 'W':
-  case 'K':
-  case 'M':
-  case 'B':
-  case 'D':
-  case 'H':
-  case 'V':
-  case 'N':
-    return true;
-  default:
-    return false;
-  }
-}
+// TODO: are nucs equivalent?
 
 void
 SearchApp::Init(void)
@@ -160,6 +154,9 @@ SearchApp::Init(void)
   arg_desc->AddKey(CHR_FLAG, "chr",
     "The chromosome to blast over", CArgDescriptions::eString);
 
+  arg_desc->AddKey(REF_FLAG, "reference",
+    "Raw fasta of reference seqences. Must be fasta indexed.", CArgDescriptions::eString);
+
   arg_desc->AddKey(INPUT_FLAG, "QueryFile",
     "FASTA file containing queries", CArgDescriptions::eInputFile);
 
@@ -169,7 +166,9 @@ SearchApp::Init(void)
   arg_desc->AddDefaultKey(COARSE_EVALUE_FLAG, "CoarseEvalue",
     "E-value threshold for coarse search against reference sequence", CArgDescriptions::eDouble, "1e-20");
 
-  arg_desc->AddFlag(PERF_FLAG, "Report performance data", false);
+  arg_desc->AddFlag(PERF_FLAG, "Report performance data", true);
+
+  arg_desc->AddFlag(VERBOSE_FLAG, "Be loquacious.", true);
 
   SetupArgDescriptions(arg_desc.release());
 
@@ -180,15 +179,33 @@ SearchApp::Run(void)
 {
   const CArgs& args = GetArgs();
 
-  EProgram program = ProgramNameToEnum(BLAST_PROGRAM);
+  string dbname  = args[DB_FLAG].AsString();
+  string vdbpath = args[VDB_FLAG].AsString();
+  string refpath = args[REF_FLAG].AsString();
 
-  CRef<CBlastOptionsHandle> opts(CBlastOptionsFactory::Create(program));
+  double coarse_evalue = args[COARSE_EVALUE_FLAG].AsDouble();
+  double fine_evalue   = args[EVALUE_FLAG].AsDouble();
 
+  // init members.
+  _chr_name    = args[CHR_FLAG].AsString();
   _report_perf = args[PERF_FLAG].AsBoolean();
+  _verbose     = args[VERBOSE_FLAG].AsBoolean();
 
-  if(args[COARSE_EVALUE_FLAG].AsDouble()) {
-    opts->SetEvalueThreshold(args[COARSE_EVALUE_FLAG].AsDouble());
+  _timer.update_time();
+  _genotypes = SlurpGenotypes(vdbpath);
+  if( _report_perf ) {
+    cerr << "Reading bitvectors: " << _timer.update_time() << endl ;
   }
+
+  string vdb_file_name = getVDBFilePath(vdbpath).string();
+  Tabix vdb(vdb_file_name);
+
+  _fastaRef.open(refpath);
+
+  // Prep coarse blast.
+  EProgram program = ProgramNameToEnum(BLAST_PROGRAM);
+  CRef<CBlastOptionsHandle> opts(CBlastOptionsFactory::Create(program));
+  opts->SetEvalueThreshold(coarse_evalue);
   opts->Validate();
 
   CRef<CObjectManager> objmgr = CObjectManager::GetInstance();
@@ -198,53 +215,28 @@ SearchApp::Run(void)
 
   // this chunk of madness prepares the query file.
   SDataLoaderConfig dlconfig(IS_PROTEIN);
-
   CBlastInputSourceConfig iconfig(dlconfig);
   CBlastFastaInputSource fasta_input(args[INPUT_FLAG].AsInputFile(), iconfig);
   CScope scope(*objmgr);
   CBlastInput blast_input(&fasta_input);
   TSeqLocVector query_loc = blast_input.GetAllSeqLocs(scope);
 
-  string dbname  = args[DB_FLAG].AsString();
-  string vdbpath = args[VDB_FLAG].AsString();
-  string chr     = args[CHR_FLAG].AsString();
-
-  // TODO: consider making these members.
-
-  _timer.update_time();
-  Genotypes genotypes = SlurpGenotypes(vdbpath);
-  if( _report_perf ) {
-    cerr << "Reading bitvectors: " << _timer.update_time() << endl ;
-  }
-
-  string vdb_file_name = getVDBFilePath(vdbpath).string();
-  Tabix vdb(vdb_file_name);
-
-  CRef<CSeqDBExpert> blastDbReader;
-  blastDbReader.Reset(new CSeqDBExpert(dbname, CSeqDB::eNucleotide));
-
   // coarse blast.
   CSearchResultSet results = RunBlast(dbname, query_loc, opts);
 
-  vector<double> ref_seq_retrieval_times;
-  vector<double> variant_fetch_times;
-  vector<double> variant_filter_times;
-  vector<double> fine_blast_times;
-
   for (unsigned int query_idx = 0; query_idx < results.GetNumResults(); query_idx++) {
 
-    pair<uint64_t, uint64_t> usage = get_system_memory_info();
-
-    cerr << "Processing query " << query_idx << endl;
-    cerr << "Free mem: " << usage.first  << endl;
-    cerr << "Used mem: " << usage.second << endl;
+    if ( _verbose ) {
+      cerr << "Processing query " << query_idx << endl;
+    }
 
     CSearchResults &queryResult = results[query_idx];
     PrintErrorMessages(queryResult);
+
     const list<CRef<CSeq_align> > &seqAlignList = queryResult.GetSeqAlign()->Get();
 
-    if (seqAlignList.size() > PUNT_THRESH) {
-      cerr << "punted query " << query_idx << endl;
+    if ( seqAlignList.size() > PUNT_THRESH ) {
+      cerr << "Too many hits. Skipping! " << query_idx << " (" << seqAlignList.size() << ")" << endl;
       continue;
     }
 
@@ -253,34 +245,34 @@ SearchApp::Run(void)
       int start = (*seqAlignIter)->GetSeqStart(1);
       int stop  = (*seqAlignIter)->GetSeqStop(1);
 
-      int adj_start = (FRINGE < start) ? start - FRINGE : start;
-      int adj_stop  = (true)           ? stop  + FRINGE : stop; // TODO: fix this condition.
+      // TODO: use fasta index to get sequence length and to do bounds check here.
+      int adj_start = start - FRINGE;
+      int adj_stop  = stop  + FRINGE;
       bool using_fringe = true;
 
-      string refSeq;
-
+      string ref_seq;
       _timer.update_time();
-      try {
-        getReferenceSequence(refSeq, blastDbReader, adj_start, adj_stop);
-      } catch (...) {
-        using_fringe = false;
-        refSeq.clear();
-        getReferenceSequence(refSeq, blastDbReader, start, stop);
-      }
-      ref_seq_retrieval_times.push_back(_timer.update_time());
+      getReferenceSequence(ref_seq, adj_start, adj_stop);
+      _ref_seq_retrieval_times.push_back(_timer.update_time());
 
       if (using_fringe) {
-        assert(refSeq.length() == (stop - start + 1) + 2 * FRINGE);
-        start = adj_start;
-        stop  = adj_stop;
+        unsigned int length_with_fringe = (stop - start + 1) + 2 * FRINGE;
+        if (ref_seq.length() == length_with_fringe) {
+          start = adj_start;
+          stop  = adj_stop;
+        } else {
+          cerr << ref_seq << endl;
+          cerr << ref_seq.length() << " vs " << length_with_fringe << endl;
+          cerr << adj_start << "-" << adj_stop << " " << adj_stop - adj_start + 1 << endl;
+          cerr << start     << "-" << stop     << " " << stop - start + 1         << endl;
+          assert(false);
+        }
       }
 
-      // TODO: extract this into a method
       Rows variants;
       string line;
       // NB: variant DB positions are 1-indexed.
-      string region = getRegion(chr, start+1, stop);
-
+      string region = getRegion(_chr_name, start + 1, stop);
       _timer.update_time();
       vdb.setRegion(region);
       while(vdb.getNextLine(line)) {
@@ -292,23 +284,23 @@ SearchApp::Run(void)
         }
         variants.push_back(row);
       }
-      variant_fetch_times.push_back(_timer.update_time());
+      _variant_fetch_times.push_back(_timer.update_time());
 
-      map<size_t, Row> variantsByBit;
+      map<size_t, Row> variants_by_bit;
       Bitmap variant_filter;
       for (Rows::iterator it = variants.begin(); it != variants.end(); ++it) {
         size_t idx = atoi((*it)[1].c_str());
         variant_filter.set(idx);
-        variantsByBit.insert(make_pair(idx, *it));
+        variants_by_bit.insert(make_pair(idx, *it));
       }
 
       _timer.update_time();
       map<vector<size_t>, boost::shared_ptr<vector<string> > > variant_genotypes;
-      for (Genotypes::iterator it = genotypes.begin(); it != genotypes.end(); ++it) {
+      for (Genotypes::iterator it = _genotypes.begin(); it != _genotypes.end(); ++it) {
         Bitmap and_result;
         it->second->logicaland(variant_filter, and_result);
         // Convert to vector of bits to key variant_genotypes.
-        // The bitset class does not implement cmp.
+        // As the bitset class does not implement cmp.
         vector<size_t> bits_set = and_result.toArray();
         if (variant_genotypes.find(bits_set) == variant_genotypes.end()) {
           boost::shared_ptr<vector<string> > vec(new vector<string>());
@@ -316,29 +308,39 @@ SearchApp::Run(void)
         }
         variant_genotypes[bits_set]->push_back(it->first);
       }
-      variant_filter_times.push_back(_timer.update_time());
+      _variant_filter_times.push_back(_timer.update_time());
 
-      _timer.update_time();
+      bool punt = false;
+
       map<vector<size_t>, boost::shared_ptr<vector<string> > >::iterator it = variant_genotypes.begin();
       vector<string> fine_blast_targets;
       for(; it != variant_genotypes.end(); ++it) {
         Rows variants;
         for(unsigned int variant_idx = 0; variant_idx < (it->first).size(); ++variant_idx) {
-          variants.push_back(variantsByBit[(it->first)[variant_idx]]);
+          Row variant = variants_by_bit[(it->first)[variant_idx]];
+          if (variant[2] == "SV") {
+            cerr << "Hit contains an SV; punting!" << endl;
+            punt = true;
+            goto PUNT;
+          }
+          variants.push_back(variant);
         }
-        string varSeq;
+        string var_seq;
         getVariantSequence(
-          varSeq
-          , blastDbReader
+            var_seq
           , variants
-          , refSeq
+          , ref_seq
           , start
         );
-        fine_blast_targets.push_back(varSeq);
+        fine_blast_targets.push_back(var_seq);
       }
 
+      PUNT:
+      if (punt) continue;
+
+      // TODO: experiment with batching for fine blast!
       stringstream fine_blast_input_ss;
-      for (unsigned int seq_idx = 0; seq_idx < fine_blast_targets.size(); ++seq_idx) {
+      for (size_t seq_idx = 0; seq_idx < fine_blast_targets.size(); ++seq_idx) {
         fine_blast_input_ss << ">SEQ" << seq_idx << endl;
         fine_blast_input_ss << fine_blast_targets[seq_idx] << endl;
       }
@@ -348,11 +350,9 @@ SearchApp::Run(void)
       //trim trailing endl to make fasta parser happy.
       fine_blast_input_str.erase(fine_blast_input_str.length() - 1, 1);
 
-      if(args[EVALUE_FLAG].AsDouble())
-        opts->SetEvalueThreshold(args[EVALUE_FLAG].AsDouble());
+      opts->SetEvalueThreshold(fine_evalue);
       opts->Validate();
 
-      // TODO: try with previously defined object manager
       CRef<CObjectManager> fine_blast_objmgr = CObjectManager::GetInstance();
       if (!fine_blast_objmgr) {
         throw std::runtime_error("Could not initialize fine blast object manager");
@@ -365,34 +365,27 @@ SearchApp::Run(void)
 
       CBl2Seq fine_blaster(query_loc[query_idx], target_from_str, *opts);
       TSeqAlignVector fine_results(fine_blaster.Run());
-      fine_blast_times.push_back(_timer.update_time());
+      _fine_blast_times.push_back(_timer.update_time());
 
-      for (unsigned int fine_hit_idx = 0; fine_hit_idx < fine_results.size(); ++fine_hit_idx) {
+      for (size_t fine_hit_idx = 0; fine_hit_idx < fine_results.size(); ++fine_hit_idx) {
         CConstRef<CSeq_align_set> fine_align_set = fine_results[fine_hit_idx];
         const list <CRef<CSeq_align> > &fine_align_list = fine_align_set->Get();
         ITERATE(list<CRef<CSeq_align> >, fine_iter, fine_align_list) {
           int sequence_idx = atoi((*fine_iter)->GetSeq_id(1).GetSeqIdString().c_str()) - 1;
           int fine_start   = (*fine_iter)->GetSeqStart(1);
           int fine_stop    = (*fine_iter)->GetSeqStop(1);
-          cout << fine_blast_targets[sequence_idx] << endl;
+          //cout << fine_blast_targets[sequence_idx] << endl;
           cout << fine_start << "-" << fine_stop << endl;
         }
       }
-
-      // TODOS:
-      // Report individuals. (?)
-      // Which criteria does CABlast use to check hits?
-      // What are appropriate e-values?
-      // How do we check accuracy? Requires blast over full data.
-
     }
   }
 
   if ( _report_perf ) {
-    reportPerf("Retrieving reference subseqence",     ref_seq_retrieval_times);
-    reportPerf("Fetching overlapping variants",       variant_fetch_times);
-    reportPerf("Bitwise-and over variant BVs",        variant_filter_times);
-    reportPerf("Initializing and running fine blast", fine_blast_times);
+    reportPerf("Retrieving reference subseqence",     _ref_seq_retrieval_times);
+    reportPerf("Fetching overlapping variants",       _variant_fetch_times);
+    reportPerf("Bitwise-and over variant BVs",        _variant_filter_times);
+    reportPerf("Initializing and running fine blast", _fine_blast_times);
   }
 
   return SUCCESS;
@@ -414,94 +407,97 @@ SearchApp::reportPerf(string label, vector<double> &samples) {
 
 void
 SearchApp::getVariantSequence(string &outstr
-  , CRef<CSeqDBExpert> blastDbReader
   , Rows variants
   , string &reference
   , int startPos
 ) {
+
+  int offset = 0; // offset of output from reference sequence.
+  int max = -1;
+
   outstr = reference;
+
   for (Rows::iterator it = variants.begin(); it != variants.end(); ++it) {
 
-    // variant info
-    int pos = atoi(((*it)[3]).c_str()) - startPos - 1;
-    string ref = (*it)[4];
-    string alt = (*it)[5];
+    Row variant = *it;
 
-    // make sure that the reference sequences line up
-    assert(reference.at(pos) == ref.at(0));
+    // if (offset != 0) {
+    //   cerr << "Trying to replace variant in length-modified string. bailing out!" << endl;
+    //   return;
+    // }
+
+    int bit = atoi(variant[1].c_str());
+
+    // assert that bits are montonically increasing
+    if(bit <= max) {
+      cerr << "something bad happened" << endl;
+      cerr << bit << " - " << max << endl;
+      assert(false);
+    }
+    max = bit;
+
+    // position in ORIGINAL reference.
+    int pos = atoi(variant[3].c_str()) - startPos - 1;
+
+    string ref = variant[4];  // substr to replace
+    string alt = variant[5];  // substr to replace with.
+
+    // the amount by which we're changing the length of output sequence in this step.
+    int len_mod = alt.length() - ref.length();
+
+    int offset_pos = pos + offset;
 
     // if the section we're replacing is longer than the chunk of the
     // reference sequence that we currently have.
-    if (ref.size() + pos > reference.length()) {
+    if (len_mod < 0 && (offset_pos + 1) + abs(len_mod) > outstr.length()) {
+      int tail_start = startPos + pos;
+      int tail_end   = tail_start + abs(len_mod) + FRINGE;
 
-      cerr << "Can't replace string part!" << endl;
-      cerr << reference << endl;
-      cerr << pos       << endl;
-      for (unsigned int i = 0; i < (*it).size(); ++i) {
-        cerr << (*it)[i] << "\t";
+      if (_verbose) {
+        cerr << "Fetching more reference! " << tail_start << "-" << tail_end << endl;
       }
-      cerr << endl;
 
-      return;
-      // TODO: fetch properly-sized sequence from reference database
+      string tail;
+      getReferenceSequence(tail, tail_start, tail_end);
 
+      if(reference.at(pos) != tail.at(0)) {
+        cerr << "Variant num: " << variant[1] << endl;
+        cerr << "ALT len: " << alt.length() << endl;
+        cerr << "REF len: " << ref.length() << endl;
+        cerr << "len_mod: " << len_mod << endl;
+        cerr << startPos << endl;
+        cerr << reference.at(pos) << " - " << tail.at(0) << endl;
+        cerr << reference.substr(pos-1) << endl;
+        cerr << tail << endl;
+        assert(false);
+      }
+
+      outstr.erase(offset_pos + 1);
+      outstr.append(tail.substr(1));
     }
 
-    outstr.replace(pos, ref.size(), alt);
+    // basic sanity check -- variant lines up to original reference
+    assert(reference.at(pos) == ref.at(0));
+
+    // insertion
+    if (alt.length() > 1) {
+      outstr.insert(offset_pos + 1, alt.substr(1));
+    } else {
+      outstr.replace(offset_pos, ref.size(), alt);
+    }
+
+    offset += len_mod;
+
   }
+
 }
 
 void
-SearchApp::getReferenceSequence(string& outstr
-  , CRef<CSeqDBExpert> blastDb
-  , int start
-  , int end
-){
-
-  CNcbiOstrstream out;
-
-  TSeqRange range(start, end);
-  CSeqFormatterConfig conf;
-  conf.m_SeqRange = range;
-  conf.m_Strand = eNa_strand_plus;
-  conf.m_TargetOnly = true;
-  conf.m_UseCtrlA = true;
-
-  TQueries queries;
-  for (int oid = 0; blastDb->CheckOrFindOID(oid); oid++) {
-    vector<int> gis;
-    blastDb->GetGis(oid, gis);
-    if (gis.empty()) {
-      CRef<CBlastDBSeqId> blastdb_seqid(new CBlastDBSeqId());
-      blastdb_seqid->SetOID(oid);
-      queries.push_back(blastdb_seqid);
-    } else {
-      ITERATE(vector<int>, gi, gis) {
-        queries.push_back(CRef<CBlastDBSeqId>
-          (new CBlastDBSeqId(NStr::IntToString(*gi))));
-      }
-    }
-  }
-
-  const string outfmt = "%f";
-  CSeqFormatter seq_fmt(outfmt, *blastDb, out, conf);
-  NON_CONST_ITERATE(TQueries, itr, queries) {
-    // can throw an exception; let it bubble out.
-    seq_fmt.Write(**itr);
-  }
-
-  // convert from NCBI-land
-  stringstream ss(out.str());
-  string line;
-  outstr.clear();
-  for (int i = 0; getline(ss, line); ++i) {
-    if (i != 0) {
-      for (string::iterator it = line.begin(); it != line.end(); ++it) {
-        if (isValidNuc(*it)) outstr.push_back(*it);
-      }
-    }
-  }
-
+SearchApp::getReferenceSequence(string& outstr, int start, int end){
+  const int seq_len = end - start + 1;
+  string seq = _fastaRef.getSubSequence(_chr_name, start, seq_len);
+  assert(seq.length() == seq_len);
+  outstr = seq;
 }
 
 Bitmap
@@ -585,14 +581,6 @@ SearchApp::PrintErrorMessages(CSearchResults &queryResult) {
         cerr << (*it)->GetMessage() << endl;
       }
     }
-}
-
-pair<uint64_t, uint64_t>
-SearchApp::get_system_memory_info()
-{
-  struct sysinfo inf;
-  sysinfo(&inf);
-  return make_pair(inf.mem_unit * inf.freeram, inf.mem_unit * inf.totalram);
 }
 
 void
