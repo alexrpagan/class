@@ -120,7 +120,7 @@ private:
 
   Genotypes SlurpGenotypes(const string vdb_dir);
 
-  string getRegion(string chr, int start, int end);
+  string getRegion(int start, int end);
 
   Bitmap bitmapFromArray(vector<size_t> array);
 
@@ -272,7 +272,7 @@ SearchApp::Run(void)
       Rows variants;
       string line;
       // NB: variant DB positions are 1-indexed.
-      string region = getRegion(_chr_name, start + 1, stop);
+      string region = getRegion(start + 1, stop);
       _timer.update_time();
       vdb.setRegion(region);
       while(vdb.getNextLine(line)) {
@@ -510,9 +510,9 @@ SearchApp::bitmapFromArray(vector<size_t> array) {
 }
 
 string
-SearchApp::getRegion(string chr, int start, int end) {
+SearchApp::getRegion(int start, int end) {
   ostringstream ss;
-  ss << chr << ":" << start << "-" << end;
+  ss << _chr_name << ":" << start << "-" << end;
   return ss.str();
 }
 
