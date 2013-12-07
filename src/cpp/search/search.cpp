@@ -261,16 +261,11 @@ SearchApp::Run(void)
     }
 
     ITERATE(list <CRef<CSeq_align> >, seqAlignIter, seqAlignList) {
-
       int start = (*seqAlignIter)->GetSeqStart(1);
       int stop  = (*seqAlignIter)->GetSeqStop(1);
-
       // TODO: use fasta index to get sequence length and to do bounds check here.
       int adj_start = start - FRINGE;
       int adj_stop  = stop  + FRINGE;
-      bool using_fringe = true;
-
-      // TODO: clean this up
       start = adj_start;
       stop  = adj_stop;
 
@@ -315,7 +310,6 @@ SearchApp::Run(void)
       }
       _variant_filter_times.push_back(_timer.update_time());
 
-
       map<vector<size_t>, boost::shared_ptr<vector<string> > >::iterator it = variant_genotypes.begin();
       vector<string> fine_blast_targets;
       for(; it != variant_genotypes.end(); ++it) {
@@ -333,7 +327,6 @@ SearchApp::Run(void)
         );
         fine_blast_targets.push_back(var_seq);
       }
-
 
       // TODO: experiment with batching for fine blast!
       stringstream fine_blast_input_ss;
@@ -371,7 +364,7 @@ SearchApp::Run(void)
           int sequence_idx = atoi((*fine_iter)->GetSeq_id(1).GetSeqIdString().c_str()) - 1;
           int fine_start   = (*fine_iter)->GetSeqStart(1);
           int fine_stop    = (*fine_iter)->GetSeqStop(1);
-          //cout << fine_blast_targets[sequence_idx] << endl;
+          cout << fine_blast_targets[sequence_idx] << endl;
           cout << fine_start << "-" << fine_stop << endl;
         }
       }
@@ -409,27 +402,19 @@ SearchApp::getVariantSequence(
   , int ref_start_pos
   , int ref_end_pos
 ) {
-
   // positions of last variant
   int last_start = 0, last_end = ref_start_pos;
-
   bool first = true;
   Variant last_variant;
-
   for (Rows::iterator it = variants.begin(); it != variants.end(); ++it) {
-
     Variant variant(*it);
-
     if (first) {
       last_variant = variant;
       first = false;
     }
-
     if (variant.GetPos() < last_end) {
-
       if (last_variant.subsumes(variant))    continue;
       if (last_variant.modifiesRef(variant)) continue;
-
       if (_verbose) {
         cerr << "Unusual overlapping or out-of-order variants:" << endl;
         cerr << variant.GetPos() << " - " << last_end << endl;
@@ -439,41 +424,31 @@ SearchApp::getVariantSequence(
         }
       }
       continue;
-
     }
-
     if (variant.GetAlt() != "<DEL>") {
-
       string ref_before_var;
-
       if (variant.GetPos() - last_end > 0) {
         getReferenceSequence(ref_before_var, last_end, variant.GetPos());
       }
-
       string alt = variant.GetAlt();
       for(string::iterator alt_it = alt.begin(); alt_it != alt.end(); ++alt_it) {
         if(!isValidNuc(*alt_it)) {
-          cerr << "Something strange is up with this variant:" << endl;
+          cerr << "Something strange is happening with this variant:" << endl;
           cerr << variant << endl;
           assert(false);
         }
       }
-
       outbuf.append(ref_before_var + variant.GetAlt());
     }
-
     last_start   = variant.GetPos();
     last_end     = last_start + variant.GetRef().size();
     last_variant = variant;
-
   }
-
   if (last_end < ref_end_pos + 1) {
     string endref;
     getReferenceSequence(endref, last_end, ref_end_pos + 1);
     outbuf += endref;
   }
-
 }
 
 
