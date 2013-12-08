@@ -40,7 +40,7 @@ if ! [[ -e $OUT/refdb ]]
             -title $CHR || exit 1
 fi
 
-for size in 1 5 10 15 20 25
+for size in 1
 do
     echo "Preparing database of $size chromosomes"
 
@@ -55,17 +55,17 @@ do
         then
             mkdir $benchdir/raw || exit
             # select some random fasta files
-            fasta_files=`ls $IN/raw/*.fa | sort -R --random-source=/dev/zero | head -n $size`
+            fasta_files=`ls $IN/raw/*.fa | head -n 100 | sort -R --random-source=/dev/zero | head -n $size`
             for f in $fasta_files
             do
                 echo "Copying $f"
                 cp $f $benchdir/raw
 
                 echo "Replacing defline with filename"
-                sed -i "1s/.*/>"$(basename $f)"/" $f
+                sed -i '1s/.*/>'$(basename $f)'/' $f
 
-                echo "Adding newline at end of each file"
-                sed -i -e '$a\' $f
+                # echo "Adding newline at end of each file"
+                # sed -i -e '$a\' $f
 
                 echo #done...
             done

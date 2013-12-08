@@ -70,6 +70,7 @@ namespace {
   const string BLAST_PROGRAM      = "blastn";
   const string EVALUE_FLAG        = "evalue";
   const string INPUT_FLAG         = "in";
+  const string FULL_FLAG          = "full";
   const string CHR_FLAG           = "chr";
   const string REF_FLAG           = "ref";
   const string VDB_FLAG           = "vdb";
@@ -152,6 +153,8 @@ private:
   void reportPerf(string label, vector<double>& samples);
   void printVariant(Row &variant);
 
+  CSearchResultSet fullBlast(TSeqLocVector query_loc, CRef<CBlastOptionsHandle> opts, Uint8 *full_db_size);
+
 };
 
 // TODO: are nucs equivalent?
@@ -164,6 +167,9 @@ SearchApp::Init(void)
 
   arg_desc->SetUsageContext(GetArguments().GetProgramBasename(),
                 "Blast over bitvector-compressed genomes");
+
+  arg_desc->AddDefaultKey(FULL_FLAG, "Full",
+    "Full blastdb", CArgDescriptions::eString, "");
 
   arg_desc->AddKey(DB_FLAG, "Database",
     "Location of reference blast database", CArgDescriptions::eString);
@@ -241,6 +247,16 @@ SearchApp::Run(void)
   CBlastInput blast_input(&fasta_input);
   TSeqLocVector query_loc = blast_input.GetAllSeqLocs(scope);
 
+  bool compare_with_full = args[FULL_FLAG].AsString().size() > 0;
+
+  Uint8 full_db_size;
+  CSearchResultSet full_results;
+  if ( compare_with_full ) {
+    full_results = fullBlast(query_loc, opts, &full_db_size);
+  }
+
+  int full_ctr = 0, missed_ctr = 0;
+
   // coarse blast.
   CSearchResultSet results = RunBlast(dbname, query_loc, opts);
 
@@ -259,6 +275,8 @@ SearchApp::Run(void)
       cerr << "Too many hits. Skipping! " << query_idx << " (" << seqAlignList.size() << ")" << endl;
       continue;
     }
+
+    set<pair<int,int> > class_hits;
 
     ITERATE(list <CRef<CSeq_align> >, seqAlignIter, seqAlignList) {
       int start = (*seqAlignIter)->GetSeqStart(1);
@@ -361,11 +379,46 @@ SearchApp::Run(void)
         CConstRef<CSeq_align_set> fine_align_set = fine_results[fine_hit_idx];
         const list <CRef<CSeq_align> > &fine_align_list = fine_align_set->Get();
         ITERATE(list<CRef<CSeq_align> >, fine_iter, fine_align_list) {
-          int sequence_idx = atoi((*fine_iter)->GetSeq_id(1).GetSeqIdString().c_str()) - 1;
+          //int sequence_idx = atoi((*fine_iter)->GetSeq_id(1).GetSeqIdString().c_str()) - 1;
           int fine_start   = (*fine_iter)->GetSeqStart(1);
           int fine_stop    = (*fine_iter)->GetSeqStop(1);
-          cout << fine_blast_targets[sequence_idx] << endl;
-          cout << fine_start << "-" << fine_stop << endl;
+          if ( compare_with_full ) {
+            class_hits.insert(make_pair(adj_start + fine_start, adj_start + fine_stop));
+          }
+          // cout << fine_blast_targets[sequence_idx] << endl;
+          cout << adj_start + fine_start << "-" << adj_start + fine_stop << endl;
+        }
+      }
+    }
+    /*
+      Iterate through all full hits for this query.
+    */
+    if ( compare_with_full ) {
+      const list <CRef<CSeq_align> > &full_seqAlignList = full_results[query_idx].GetSeqAlign()->Get();
+      ITERATE(list < CRef <CSeq_align> >, seqAlign_it, full_seqAlignList) {
+        full_ctr++;
+        int start = (*seqAlign_it)->GetSeqStart(1);
+        int end   = (*seqAlign_it)->GetSeqStop(1);
+        if (!class_hits.count(make_pair(start, end))) {
+          bool found_imperfect = false;
+          // look for hits that aren't quite right
+          for (set<pair<int, int> >::iterator it = class_hits.begin(); it != class_hits.end(); it++) {
+            int hit_start = it->first;
+            int hit_end   = it->second;
+            if (hit_start <= end && hit_end >= start) {
+              found_imperfect = true;
+              cerr << "found imperfect: " << hit_start << " " << hit_end << endl;
+              break;
+            }
+          }
+          if (!found_imperfect) {
+            cerr << "full blast: hit at pos " << start << "-" << end << " ";
+            cerr << "Missed. ";
+            double evalue;
+            (*seqAlign_it)->GetNamedScore(CSeq_align::eScore_EValue, evalue);
+            cerr << evalue << endl;
+            missed_ctr++;
+          }
         }
       }
     }
@@ -376,9 +429,40 @@ SearchApp::Run(void)
     reportPerf("Fetching overlapping variants",       _variant_fetch_times);
     reportPerf("Bitwise-and over variant BVs",        _variant_filter_times);
     reportPerf("Initializing and running fine blast", _fine_blast_times);
+    if ( compare_with_full ) {
+      cerr << endl;
+      cerr << "Overall accuracy: " << 1-missed_ctr/(double) full_ctr << endl;
+      cerr << "Missed " << missed_ctr << "/" << full_ctr << endl;
+    }
   }
 
   return SUCCESS;
+}
+
+
+CSearchResultSet
+SearchApp::fullBlast(
+    TSeqLocVector query_loc
+    , CRef<CBlastOptionsHandle> opts
+    , Uint8 *full_db_size
+) {
+  const CArgs& args = GetArgs();
+  const CSearchDatabase target_db(args[FULL_FLAG].AsString(), CSearchDatabase::eBlastDbIsNucleotide);
+
+  *full_db_size = target_db.GetSeqDb()->GetTotalLength();
+  cerr << "Full db size: " << *full_db_size << endl;
+
+  CRef<IQueryFactory> query_factory(new CObjMgr_QueryFactory(query_loc));
+
+  _timer.update_time();
+  CLocalBlast blaster(query_factory, opts, target_db);
+  cerr << "Time spent initializing full BLAST: " << _timer.update_time() << endl;
+
+  _timer.update_time();
+  CSearchResultSet results = *blaster.Run();
+  cerr << "Full BLAST search time: " << _timer.update_time() << endl;
+
+  return results;
 }
 
 void
