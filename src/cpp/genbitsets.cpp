@@ -23,9 +23,11 @@ namespace {
   const char* HELP_FLAG = "help";
   const char* OUT_FLAG  = "out";
   const char* VCF_FLAG  = "in";
+  const char* CHR_FLAG  = "chr";
 
   const string VT_DB_FILE = "vt.db";
   string VT_KEY = "VT";
+  string SV_END_KEY = "END";
 
 }
 
@@ -67,11 +69,12 @@ int
 main(int argc, char** argv) {
 
   VariantCallFile variantFile;
-  string vcf_file_name, outdir;
+  string vcf_file_name, outdir, chrom;
 
   po::options_description desc("Allowed options");
   desc.add_options()
     (HELP_FLAG, "Get some help")
+    (CHR_FLAG,  po::value<string>(&chrom),         "Chromosome number")
     (OUT_FLAG,  po::value<string>(&outdir),        "Name of output dir")
     (VCF_FLAG,  po::value<string>(&vcf_file_name), "Name of vcf file")
   ;
@@ -132,17 +135,24 @@ main(int argc, char** argv) {
 
     if (!var.isPhased()) {
       cerr << "variant " << var.sequenceName << ":" << var.position
-           << " is not phased, skipping"     << endl;
-      continue;
+           << " is not phased, giving up"     << endl;
+      return ERROR;
     }
 
-    vdb << variantCount << "\t"
-        << var.getInfoValueString(VT_KEY, 0) << "\t"
+    string vt_type = var.getInfoValueString(VT_KEY, 0);
+    vdb << chrom << "\t"
+        << variantCount << "\t"
+        << vt_type << "\t"
         << var.position     << "\t"
         << var.ref          << "\t";
-
     var.printAlt(vdb);
-    vdb << "\t" << endl;
+    vdb << "\t";
+    if(vt_type == "SV") {
+      vdb << (int) (var.getInfoValueFloat(SV_END_KEY, 0) - var.position - 1);
+    } else {
+      vdb << "-";
+    }
+    vdb << endl;
 
     map<string, map<string, vector<string> > >::iterator s     = var.samples.begin();
     map<string, map<string, vector<string> > >::iterator sEnd  = var.samples.end();
