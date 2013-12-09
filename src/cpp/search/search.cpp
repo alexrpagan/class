@@ -276,8 +276,6 @@ SearchApp::Run(void)
   // Prep coarse blast.
   EProgram program = ProgramNameToEnum(BLAST_PROGRAM);
   CRef<CBlastOptionsHandle> opts(CBlastOptionsFactory::Create(program));
-  opts->SetEvalueThreshold(coarse_evalue);
-  opts->Validate();
 
   CRef<CObjectManager> objmgr = CObjectManager::GetInstance();
   if (!objmgr) {
@@ -297,13 +295,17 @@ SearchApp::Run(void)
   Uint8 full_db_size;
   CSearchResultSet full_results;
   if ( compare_with_full ) {
-    full_results = fullBlast(query_loc, opts, &full_db_size);
-    opts->SetDbLength(full_db_size);
+    opts->SetEvalueThreshold(fine_evalue);
     opts->Validate();
+    full_results = fullBlast(query_loc, opts, &full_db_size);
   }
 
   int full_ctr = 0, missed_ctr = 0, coarse_hits = 0;
 
+  // set evalue-back to coarse
+  opts->SetEvalueThreshold(coarse_evalue);
+  opts->SetDbLength(full_db_size);
+  opts->Validate();
   // coarse blast.
   CSearchResultSet results = RunBlast(dbname, query_loc, opts);
 
@@ -635,15 +637,14 @@ SearchApp::getVariantSequence(
   , int ref_start_pos
   , int ref_end_pos
 ) {
+
   // positions of last variant
   int last_start = 0, last_end = ref_start_pos;
   bool first = true;
+
   Variant last_variant;
   for (vector<Variant>::iterator it = variants.begin(); it != variants.end(); ++it) {
     Variant variant = *it;
-    if (_verbose) {
-      cerr << "processing variant #" << variant.GetBit() << " for query #" << _curr_query << endl;
-    }
     if (first) {
       last_variant = variant;
       last_start   = variant.GetPos();
@@ -663,21 +664,28 @@ SearchApp::getVariantSequence(
     string ref_before_var;
     if (variant.GetPos() - last_end > 0) {
       getReferenceSequence(ref_before_var, last_end, variant.GetPos());
+      int ref_size = ref_before_var.size();
+      // sanity check
+      assert(ref_before_var[ref_size-1] == variant.GetRef()[0]);
+      ref_before_var.resize(ref_size-1);
     }
+    outbuf.append(ref_before_var);
     string alt = variant.GetAlt();
     if (alt != "<DEL>") {
-      outbuf.append(ref_before_var + variant.GetAlt());
+      outbuf.append(variant.GetAlt());
     } else {
-      cerr << "Imprecise SV; ignoring." << endl;
-      outbuf.append(ref_before_var + variant.GetRef());
+      if (_verbose) {
+        // cerr << "Impreci se SV; ignoring." << endl;
+      }
+      outbuf.append(variant.GetRef());
     }
-    last_end = last_start + variant.GetRef().size();
-    last_start   = variant.GetPos();
+    last_start = variant.GetPos();
+    last_end   = last_start + variant.GetRef().size();
     last_variant = variant;
   }
-  if (last_end < ref_end_pos + 1) {
+  if (last_end < ref_end_pos) {
     string endref;
-    getReferenceSequence(endref, last_end, ref_end_pos + 1);
+    getReferenceSequence(endref, last_end, ref_end_pos);
     outbuf += endref;
   }
 }
