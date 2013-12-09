@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <vector>
 #include <cassert>
+#include <cmath>
 
 #ifndef VARIANT_CPP
 #define VARIANT_CPP
@@ -18,6 +19,7 @@ public:
     _ref = row[4];
     _alt = row[5];
     _type = row[2];
+    _sv_len = (_type == "SV") ? atoi(row[6].c_str()) : 0;
   }
 
   int GetChrom()   { return _chr;  }
@@ -27,6 +29,9 @@ public:
   string GetAlt()  { return _alt;  }
   string GetType() { return _type; }
 
+  bool IsDeletion() { return (_type == "INDEL" || _type == "SV") && _ref.size() > 1; }
+  bool IsInsert()   { return _type == "INDEL" && _ref.size() == 1; }
+
   int GetLengthMod() {
     if ( _type == "SNP" ) {
       return 0;
@@ -34,9 +39,9 @@ public:
       return _alt.size() - _ref.size();
     } else if( _type == "SV" ) {
       if (_alt == "<DEL>") {
-        return - _ref.size();
+        return 0;
       }
-      return - _ref.size() + _alt.size();
+      return _alt.size() - _ref.size();
     } else {
       assert(false);
     }
@@ -44,22 +49,14 @@ public:
   }
 
   bool subsumes(Variant &var) {
-    return (var.GetBit() == (_bit + 1))
-      && (_ref.size() > var.GetRef().size())
-      && (_ref.find(var.GetRef()) != string::npos);
-  }
-
-  bool modifiesRef(Variant &var) {
-    if (_type == "SNP" && (var.GetType() == "SV" || var.GetType() == "INDEL")) {
-      return var.GetPos() == _pos;
-    }
-    return false;
+    return var.GetPos() >= _pos && var.GetPos() <= _pos + abs(GetLengthMod());
   }
 
 private:
   int _chr;
   int _bit;
   int _pos;
+  int _sv_len;
   string _ref;
   string _alt;
   string _type;

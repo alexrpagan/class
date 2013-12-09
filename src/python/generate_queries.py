@@ -23,10 +23,14 @@ def main():
             ref += line.strip()
 
     for _ in range(NUM_QUERIES):
-        start   = random.randint(0, len(ref) - MAX_LENGTH - 1)
-        length  = random.randint(MIN_LENGTH, MAX_LENGTH)
-        replace = random.random()
-        ref_seq = ref[start:start+length]
+        while True:
+            start   = random.randint(0, len(ref) - MAX_LENGTH - 1)
+            length  = random.randint(MIN_LENGTH, MAX_LENGTH)
+            replace = random.random()
+            ref_seq = ref[start:start+length]
+            if (ref_seq.count('N') / float(length)) < .5 :
+                break # make sure query is sufficiently complex
+
         query = ""
         for c in ref_seq:
             if random.random() < replace:

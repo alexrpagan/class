@@ -62,6 +62,7 @@ namespace {
 
   const unsigned int PUNT_THRESH = 1000;
 
+  const int FUZZ        = 1000;
   const int FRINGE      = 100;
   const int FASTA_WIDTH = 80;
 
@@ -124,6 +125,8 @@ private:
   string _chr_name;
 
   bool _verbose;
+
+  int _curr_query;
 
   // perf
   bool _report_perf;
@@ -219,7 +222,6 @@ SearchApp::Run(void)
   _report_perf = args[PERF_FLAG].AsBoolean();
   _verbose     = args[VERBOSE_FLAG].AsBoolean();
 
-
   _timer.update_time();
   slurpGenotypes(vdbpath);
   if( _report_perf ) {
@@ -228,6 +230,46 @@ SearchApp::Run(void)
 
   string vdb_file_name = getVDBFilePath(vdbpath).string();
   Tabix vdb(vdb_file_name);
+
+  _timer.update_time();
+  vector<Variant> variantDB;
+  string region = getRegion(0, std::numeric_limits<int>::max());
+  vdb.setRegion(region);
+  string line;
+  while(vdb.getNextLine(line)) {
+    Row row;
+    stringstream ss(line);
+    string cell;
+    while(getline(ss, cell, '\t')) row.push_back(cell);
+    Variant var(row);
+    variantDB.push_back(var);
+  }
+  if( _report_perf ) {
+    cerr << "Reading variant DB: " << _timer.update_time() << endl ;
+  }
+
+  _timer.update_time();
+  map<string, boost::shared_ptr<Bitmap> > indiv_lenmod_variants;
+  Bitmap length_modifying_variants;
+  for (vector<Variant>::iterator it = variantDB.begin(); it != variantDB.end(); ++it) {
+    if (it->GetLengthMod() != 0) {
+      length_modifying_variants.set(it->GetBit());
+    }
+  }
+  if( _report_perf ) {
+    cerr << "Creating length-modifying variant filter: " << _timer.update_time() << endl ;
+  }
+
+  _timer.update_time();
+  for (Genotypes::iterator it = _genotypes.begin(); it != _genotypes.end(); ++it) {
+    boost::shared_ptr<Bitmap> and_res(new Bitmap());
+    // which length-modifying variants does the indiv have?
+    it->second->logicaland(length_modifying_variants, *and_res);
+    indiv_lenmod_variants.insert(make_pair(it->first, and_res));
+  }
+  if( _report_perf ) {
+    cerr << "Calcluating offsets for each indiv: " << _timer.update_time() << endl ;
+  }
 
   _fastaRef.open(refpath);
 
@@ -256,23 +298,27 @@ SearchApp::Run(void)
   CSearchResultSet full_results;
   if ( compare_with_full ) {
     full_results = fullBlast(query_loc, opts, &full_db_size);
+    opts->SetDbLength(full_db_size);
+    opts->Validate();
   }
 
-  int full_ctr = 0, missed_ctr = 0;
+  int full_ctr = 0, missed_ctr = 0, coarse_hits = 0;
 
   // coarse blast.
   CSearchResultSet results = RunBlast(dbname, query_loc, opts);
 
   for (unsigned int query_idx = 0; query_idx < results.GetNumResults(); query_idx++) {
-
+    _curr_query = query_idx;
     if ( _verbose ) {
-      cout << "Processing query " << query_idx << endl;
+      cout << "Processing query: " << query_idx << endl;
     }
 
     CSearchResults &queryResult = results[query_idx];
     PrintErrorMessages(queryResult);
 
     const list<CRef<CSeq_align> > &seqAlignList = queryResult.GetSeqAlign()->Get();
+
+    coarse_hits = seqAlignList.size();
 
     if ( seqAlignList.size() > PUNT_THRESH ) {
       cerr << "Too many hits. Skipping! " << query_idx << " (" << seqAlignList.size() << ")" << endl;
@@ -285,6 +331,7 @@ SearchApp::Run(void)
     ITERATE(list <CRef<CSeq_align> >, seqAlignIter, seqAlignList) {
       int start = (*seqAlignIter)->GetSeqStart(1);
       int stop  = (*seqAlignIter)->GetSeqStop(1);
+
       // TODO: use fasta index to get sequence length and to do bounds check here.
       int adj_start = start - FRINGE;
       int adj_stop  = stop  + FRINGE;
@@ -335,7 +382,6 @@ SearchApp::Run(void)
       map<vector<size_t>, boost::shared_ptr<vector<string> > >::iterator it = variant_genotypes.begin();
 
       vector<pair<vector<string>, string> > fine_blast_targets;
-
       for(; it != variant_genotypes.end(); ++it) {
         vector<Variant> variants;
         for(unsigned int variant_idx = 0; variant_idx < (it->first).size(); ++variant_idx) {
@@ -405,27 +451,22 @@ SearchApp::Run(void)
               cout << fine_blast_targets[sequence_idx].first[i] << ", ";
             }
             cout << endl;
-            cout << fine_blast_targets[sequence_idx].second << endl;
+            //cout << fine_blast_targets[sequence_idx].second << endl;
             cout << adj_start + fine_start << "-" << adj_start + fine_stop << endl;
             cout << fine_start << "-" << fine_stop << endl;
           }
-
         }
       }
     }
 
     if ( _verbose ) {
-      cerr << "Found hits for " << indiv_to_hits.size() << " individuals" << endl;
+      // cerr << "Found hits for " << indiv_to_hits.size() << " individuals" << endl;
     }
-
-    // TODO: filter by length modifying variants.
-    // TODO: pull those into memory
 
     map<string, vector<pair<int, int> > >::iterator hit_trans_it = indiv_to_hits.begin();
     for (; hit_trans_it != indiv_to_hits.end(); ++hit_trans_it) {
 
       string indiv = hit_trans_it->first;
-
       vector<pair<int, int> > hits = hit_trans_it->second;
       sort(hits.begin(), hits.end());
 
@@ -436,100 +477,63 @@ SearchApp::Run(void)
       pair<int, int> last_hit  = hits.back();
       assert(last_hit.first >= first_hit.first);
 
-      int offset = 0, lastMod = 0, lastPos = 0;
-
       boost::shared_ptr<Bitmap> bits = _genotypes[indiv];
       vector<size_t> set_bits = bits->toArray();
-
-      int variant_idx = 0;
-
-      string line;
-      string region = getRegion(0, last_hit.first + 100000);
-      vdb.setRegion(region);
 
       vector<pair<int, int> >::iterator hit_iter = hits.begin();
 
       bool first_var = true;
+      int offset = 0;
       Variant last_var;
 
       vector<size_t>::iterator it = set_bits.begin();
       for (; it != set_bits.end(); ++it) {
-
-        if (hit_iter == hits.end()) {
-          break;
-        }
-
         // get the next set bit
         int bit = *it;
-
-        // scan to that variant.
-        while ( variant_idx < bit ) {
-          vdb.getNextLine(line);
-          variant_idx++;
+        Variant var = variantDB[bit];
+        assert(var.GetBit() == bit);
+        // loop through any variants we have passed, reporting hits with the offset up to this point
+        for(; hit_iter != hits.end() && (*hit_iter).first < var.GetPos(); ++hit_iter) {
+          cout << "HIT: " << indiv << "\t" << offset + hit_iter->first  << "\t" << offset + hit_iter->second << endl;
+          if ( compare_with_full ) {
+            class_hits.insert(make_pair(offset + hit_iter->first - FUZZ, offset + hit_iter->second + FUZZ));
+          }
+          reported++;
         }
-
-        // found it!
-        if (variant_idx == bit) {
-
-          // process variant
-          Row row;
-          stringstream ss(line);
-          string cell;
-          while(getline(ss, cell, '\t')) row.push_back(cell);
-          Variant var(row);
-
-          // loop through any variants we have passed, reporting hits with the offset up to this point
-          for(; hit_iter != hits.end() && (*hit_iter).first < var.GetPos(); ++hit_iter) {
-            cerr << offset << endl;
-            cout << "HIT from within variant: " << indiv << "\t" << offset + hit_iter->first  << "\t" << offset + hit_iter->second << endl;
-            if ( compare_with_full ) {
-              class_hits.insert(make_pair(offset + hit_iter->first, offset + hit_iter->second));
-            }
-            reported++;
-          }
-          if (hit_iter == hits.end()) {
-            break;
-          }
-
-          if (first_var || !(last_var.subsumes(var) ) {
-            if (var.GetLengthMod() != 0 ) {
-              cerr << var.GetType() << "\t" << var.GetPos() << "\t" << var.GetLengthMod() << endl;
-            }
-            offset += var.GetLengthMod();
-            last_var = var;
-            first_var = false;
-          }
-
-        } else if (variant_idx < bit) {
-          // fewer variants than bits -- should never happen.
-          assert(false);
-
+        if (hit_iter == hits.end()) {
+          cerr << "Done with hits" << endl;
+          break;
+        }
+        if (first_var) {
+          first_var = false;
         } else {
-          // individual has no more variants -- just print the rest of the hits with the current offset.
-          for (; hit_iter != hits.end(); ++hit_iter) {
-            cout << "HIT: " << indiv << "\t" << (offset + hit_iter->first)  << "\t" << (offset + hit_iter->second) << endl;
-            if ( compare_with_full ) {
-              class_hits.insert(make_pair(offset + hit_iter->first, offset + hit_iter->second));
-            }
-            reported++;
+          if (last_var.IsDeletion() && last_var.subsumes(var)) {
+            continue;
           }
         }
+        offset += var.GetLengthMod();
+        last_var = var;
       }
-
-      if (num_hits != reported) {
-        cerr << "Number of hits does not match number reported " << num_hits << " - " << reported << endl;
-        assert(false);
+      // individual has no more variants -- just print the rest of the hits with the current offset.
+      for (; hit_iter != hits.end(); ++hit_iter) {
+        cout << "HIT after variant: " << indiv << "\t" << (offset + hit_iter->first)  << "\t" << (offset + hit_iter->second) << endl;
+        if ( compare_with_full ) {
+          class_hits.insert(make_pair(offset + hit_iter->first - FUZZ, offset + hit_iter->second + FUZZ));
+        }
+        reported++;
       }
-
+      assert(num_hits == reported);
     }
 
     /*
       Iterate through all full hits for this query.
     */
+
     if ( compare_with_full ) {
+      int full_query = 0, missed_query = 0;
       const list <CRef<CSeq_align> > &full_seqAlignList = full_results[query_idx].GetSeqAlign()->Get();
       ITERATE(list < CRef <CSeq_align> >, seqAlign_it, full_seqAlignList) {
-        full_ctr++;
+        full_ctr++, full_query++;
         int start = (*seqAlign_it)->GetSeqStart(1);
         int end   = (*seqAlign_it)->GetSeqStop(1);
         if (!class_hits.count(make_pair(start, end))) {
@@ -545,13 +549,21 @@ SearchApp::Run(void)
             }
           }
           if (!found_imperfect) {
-            cout << "full blast: hit at pos " << start << "-" << end << " ";
-            cout << "Missed. ";
-            double evalue;
-            (*seqAlign_it)->GetNamedScore(CSeq_align::eScore_EValue, evalue);
-            cout << evalue << endl;
-            missed_ctr++;
+            //cout << "full blast: hit at pos " << start << "-" << end << " ";
+            //cout << "Missed. ";
+            //double evalue;
+            //(*seqAlign_it)->GetNamedScore(CSeq_align::eScore_EValue, evalue);
+            //cout << evalue << endl;
+            missed_ctr++, missed_query++;
           }
+        }
+      }
+      if (full_query > 0) {
+        double query_accuracy = 1 - missed_query / (double) full_query;
+        if (query_accuracy < .8) {
+          cout << "Bad query: " << query_accuracy << ": " << query_idx
+               << ", " << full_query << " full hits. "
+               << coarse_hits << " coarse hits." << endl;
         }
       }
     }
@@ -629,39 +641,38 @@ SearchApp::getVariantSequence(
   Variant last_variant;
   for (vector<Variant>::iterator it = variants.begin(); it != variants.end(); ++it) {
     Variant variant = *it;
+    if (_verbose) {
+      cerr << "processing variant #" << variant.GetBit() << " for query #" << _curr_query << endl;
+    }
     if (first) {
       last_variant = variant;
+      last_start   = variant.GetPos();
       first = false;
     }
     if (variant.GetPos() < last_end) {
-      if (last_variant.subsumes(variant))    continue;
-      if (last_variant.modifiesRef(variant)) continue;
       if (_verbose) {
-        cerr << "Unusual overlapping or out-of-order variants:" << endl;
-        cerr << variant.GetPos() << " - " << last_end << endl;
-        for (vector<Variant>::iterator inner_it = variants.begin(); inner_it != variants.end(); ++inner_it) {
-          cerr << *inner_it << endl;
-        }
+        // cerr << "Unusual overlapping or out-of-order variants:" << endl;
+        // cerr << variant.GetPos() << " - " << last_end << endl;
+        // for (vector<Variant>::iterator inner_it = variants.begin(); inner_it != variants.end(); ++inner_it) {
+        //   cerr << *inner_it << endl;
+        // }
       }
       continue;
     }
-    if (variant.GetAlt() != "<DEL>") {
-      string ref_before_var;
-      if (variant.GetPos() - last_end > 0) {
-        getReferenceSequence(ref_before_var, last_end, variant.GetPos());
-      }
-      string alt = variant.GetAlt();
-      for(string::iterator alt_it = alt.begin(); alt_it != alt.end(); ++alt_it) {
-        if(!isValidNuc(*alt_it)) {
-          cerr << "Something strange is happening with this variant:" << endl;
-          cerr << variant << endl;
-          assert(false);
-        }
-      }
-      outbuf.append(ref_before_var + variant.GetAlt());
+    // get all of the reference sequence up to this variant.
+    string ref_before_var;
+    if (variant.GetPos() - last_end > 0) {
+      getReferenceSequence(ref_before_var, last_end, variant.GetPos());
     }
+    string alt = variant.GetAlt();
+    if (alt != "<DEL>") {
+      outbuf.append(ref_before_var + variant.GetAlt());
+    } else {
+      cerr << "Imprecise SV; ignoring." << endl;
+      outbuf.append(ref_before_var + variant.GetRef());
+    }
+    last_end = last_start + variant.GetRef().size();
     last_start   = variant.GetPos();
-    last_end     = last_start + variant.GetRef().size();
     last_variant = variant;
   }
   if (last_end < ref_end_pos + 1) {
@@ -677,12 +688,7 @@ SearchApp::getReferenceSequence(string& outstr, int start, int end){
   _timer.update_time();
   const int seq_len = end - start + 1;
   string seq = _fastaRef.getSubSequence(_chr_name, start, seq_len);
-  if(seq.length() != seq_len) {
-    cerr << "start:  " << start << " - " << end << endl;
-    cerr << "seqlen: " << seq_len << endl;
-    cerr << "retseq: " << seq.length() << endl;
-    assert(false);
-  }
+  assert (seq.length() == seq_len);
   outstr = seq;
   _ref_seq_retrieval_times.push_back(_timer.update_time());
 }
