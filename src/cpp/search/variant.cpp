@@ -49,7 +49,7 @@ public:
   }
 
   bool subsumes(Variant &var) {
-    return var.GetPos() >= _pos && var.GetPos() <= _pos + abs(GetLengthMod());
+    return var.GetPos() < _pos + _ref.size();
   }
 
 private:

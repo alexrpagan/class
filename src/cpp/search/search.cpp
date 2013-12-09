@@ -62,8 +62,8 @@ namespace {
 
   const unsigned int PUNT_THRESH = 1000;
 
-  const int FUZZ        = 1000;
-  const int FRINGE      = 100;
+  const int FUZZ        = 0;
+  const int FRINGE      = 50;
   const int FASTA_WIDTH = 80;
 
   const bool IS_PROTEIN = false;
@@ -313,6 +313,7 @@ SearchApp::Run(void)
     _curr_query = query_idx;
     if ( _verbose ) {
       cout << "Processing query: " << query_idx << endl;
+      cerr << "Processing query: " << query_idx << endl;
     }
 
     CSearchResults &queryResult = results[query_idx];
@@ -432,6 +433,7 @@ SearchApp::Run(void)
         CConstRef<CSeq_align_set> fine_align_set = fine_results[fine_hit_idx];
         const list <CRef<CSeq_align> > &fine_align_list = fine_align_set->Get();
         ITERATE(list<CRef<CSeq_align> >, fine_iter, fine_align_list) {
+
           int sequence_idx = atoi((*fine_iter)->GetSeq_id(1).GetSeqIdString().c_str()) - 1;
           int fine_start   = (*fine_iter)->GetSeqStart(1);
           int fine_stop    = (*fine_iter)->GetSeqStop(1);
@@ -454,8 +456,8 @@ SearchApp::Run(void)
             }
             cout << endl;
             //cout << fine_blast_targets[sequence_idx].second << endl;
+            //cout << fine_start << "-" << fine_stop << endl;
             cout << adj_start + fine_start << "-" << adj_start + fine_stop << endl;
-            cout << fine_start << "-" << fine_stop << endl;
           }
         }
       }
@@ -493,10 +495,11 @@ SearchApp::Run(void)
         // get the next set bit
         int bit = *it;
         Variant var = variantDB[bit];
+
         assert(var.GetBit() == bit);
         // loop through any variants we have passed, reporting hits with the offset up to this point
         for(; hit_iter != hits.end() && (*hit_iter).first < var.GetPos(); ++hit_iter) {
-          cout << "HIT: " << indiv << "\t" << offset + hit_iter->first  << "\t" << offset + hit_iter->second << endl;
+          cout << "HIT: " << indiv << "\t" << offset + hit_iter->first  << "\t" << offset + hit_iter->second << "\t"<< offset << endl;
           if ( compare_with_full ) {
             class_hits.insert(make_pair(offset + hit_iter->first - FUZZ, offset + hit_iter->second + FUZZ));
           }
@@ -509,16 +512,23 @@ SearchApp::Run(void)
         if (first_var) {
           first_var = false;
         } else {
-          if (last_var.IsDeletion() && last_var.subsumes(var)) {
+          if (last_var.subsumes(var)) {
+            cerr << last_var.GetType() << " variant with range " << last_var.GetRef().size()
+                  << " subsumes " << var.GetType()
+                  << " variant with lenmod " << var.GetLengthMod()  << endl;
             continue;
           }
         }
         offset += var.GetLengthMod();
         last_var = var;
+        if (abs(var.GetLengthMod()) > 0) {
+          cerr << var.GetBit() << "\t" << var.GetPos() << "\t" << var.GetType() << "\t" << var.GetLengthMod() << "\t" << offset << endl;
+        }
+
       }
       // individual has no more variants -- just print the rest of the hits with the current offset.
       for (; hit_iter != hits.end(); ++hit_iter) {
-        cout << "HIT after variant: " << indiv << "\t" << (offset + hit_iter->first)  << "\t" << (offset + hit_iter->second) << endl;
+        cout << "HIT after variant: " << indiv << "\t" << (offset + hit_iter->first)  << "\t" << (offset + hit_iter->second) << "\t"<< offset << endl;
         if ( compare_with_full ) {
           class_hits.insert(make_pair(offset + hit_iter->first - FUZZ, offset + hit_iter->second + FUZZ));
         }
@@ -541,21 +551,22 @@ SearchApp::Run(void)
         if (!class_hits.count(make_pair(start, end))) {
           bool found_imperfect = false;
           // look for hits that aren't quite right
+
+          cout << "full blast: hit at pos " << start << "-" << end << " ";
+          cout << "Missed. ";
+          double evalue;
+          (*seqAlign_it)->GetNamedScore(CSeq_align::eScore_EValue, evalue);
+          cout << evalue << endl;
+
           for (set<pair<int, int> >::iterator it = class_hits.begin(); it != class_hits.end(); it++) {
             int hit_start = it->first;
             int hit_end   = it->second;
             if (hit_start <= end && hit_end >= start) {
               found_imperfect = true;
-              cout << "found imperfect: " << hit_start << " " << hit_end << endl;
               break;
             }
           }
           if (!found_imperfect) {
-            //cout << "full blast: hit at pos " << start << "-" << end << " ";
-            //cout << "Missed. ";
-            //double evalue;
-            //(*seqAlign_it)->GetNamedScore(CSeq_align::eScore_EValue, evalue);
-            //cout << evalue << endl;
             missed_ctr++, missed_query++;
           }
         }

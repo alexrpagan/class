@@ -40,7 +40,7 @@ if ! [[ -e $OUT/refdb ]]
             -title $CHR || exit 1
 fi
 
-for size in 1
+for size in 1 10 20 30 40 50 60 70 80 90 100 110 120 130 140 150
 do
     echo "Preparing database of $size chromosomes"
 
@@ -55,7 +55,7 @@ do
         then
             mkdir $benchdir/raw || exit
             # select some random fasta files
-            fasta_files=`ls $IN/raw/*.fa | head -n 100 | sort -R --random-source=/dev/zero | head -n $size`
+            fasta_files=`ls $IN/raw/*.fa | sort -R --random-source=/dev/zero | head -n $size`
             for f in $fasta_files
             do
                 echo "Copying $f"

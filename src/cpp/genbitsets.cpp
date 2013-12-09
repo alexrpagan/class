@@ -148,7 +148,7 @@ main(int argc, char** argv) {
     var.printAlt(vdb);
     vdb << "\t";
     if(vt_type == "SV") {
-      vdb << (int) (var.getInfoValueFloat(SV_END_KEY, 0) - var.position - 1);
+      vdb << (int) (var.getInfoValueFloat(SV_END_KEY, 0) - var.position);
     } else {
       vdb << "-";
     }
@@ -165,7 +165,7 @@ main(int argc, char** argv) {
       map<string, vector<string> >& sample = s->second;
 
       string& genotype = sample["GT"].front();
-      vector<string> gt = split(genotype, "|/");
+      vector<string> gt = split(genotype, "|");
       int cpy_idx = 0;
       for (vector<string>::iterator g = gt.begin(); g != gt.end(); ++g, ++cpy_idx) {
         int idx = atoi(g->c_str());
@@ -174,7 +174,7 @@ main(int argc, char** argv) {
           cerr << var;
           return ERROR;
         }
-        if (idx) {
+        if (idx == 1) {
           switch(cpy_idx) {
             case 0: { bitmap1->set(variantCount); break; }
             case 1: { bitmap2->set(variantCount); break; }
