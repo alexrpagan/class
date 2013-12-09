@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <vector>
+#include <cassert>
 
 #ifndef VARIANT_CPP
 #define VARIANT_CPP
@@ -25,6 +26,22 @@ public:
   string GetRef()  { return _ref;  }
   string GetAlt()  { return _alt;  }
   string GetType() { return _type; }
+
+  int GetLengthMod() {
+    if ( _type == "SNP" ) {
+      return 0;
+    } else if( _type == "INDEL" ) {
+      return _alt.size() - _ref.size();
+    } else if( _type == "SV" ) {
+      if (_alt == "<DEL>") {
+        return - _ref.size();
+      }
+      return - _ref.size() + _alt.size();
+    } else {
+      assert(false);
+    }
+    return 0;
+  }
 
   bool subsumes(Variant &var) {
     return (var.GetBit() == (_bit + 1))

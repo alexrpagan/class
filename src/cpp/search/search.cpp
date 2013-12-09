@@ -2,6 +2,7 @@
 
 #include <fstream>
 #include <sstream>
+#include <algorithm>
 #include <numeric>
 #include <cmath>
 #include <stdlib.h>
@@ -148,7 +149,7 @@ private:
   Bitmap bitmapFromArray(vector<size_t> array);
   void slurpGenotypes(const string vdb_dir);
   void PrintErrorMessages(CSearchResults &queryResult);
-  void getVariantSequence(string &outstr, Rows &variants, int start, int end);
+  void getVariantSequence(string &outstr, vector<Variant> &variants, int start, int end);
   void getReferenceSequence(string &outstr, int start, int end);
   void reportPerf(string label, vector<double>& samples);
   void printVariant(Row &variant);
@@ -203,6 +204,7 @@ SearchApp::Init(void)
 int
 SearchApp::Run(void)
 {
+
   const CArgs& args = GetArgs();
 
   string dbname  = args[DB_FLAG].AsString();
@@ -216,6 +218,7 @@ SearchApp::Run(void)
   _chr_name    = args[CHR_FLAG].AsString();
   _report_perf = args[PERF_FLAG].AsBoolean();
   _verbose     = args[VERBOSE_FLAG].AsBoolean();
+
 
   _timer.update_time();
   slurpGenotypes(vdbpath);
@@ -263,7 +266,7 @@ SearchApp::Run(void)
   for (unsigned int query_idx = 0; query_idx < results.GetNumResults(); query_idx++) {
 
     if ( _verbose ) {
-      cerr << "Processing query " << query_idx << endl;
+      cout << "Processing query " << query_idx << endl;
     }
 
     CSearchResults &queryResult = results[query_idx];
@@ -277,6 +280,7 @@ SearchApp::Run(void)
     }
 
     set<pair<int,int> > class_hits;
+    map<string, vector<pair<int, int> > > indiv_to_hits;
 
     ITERATE(list <CRef<CSeq_align> >, seqAlignIter, seqAlignList) {
       int start = (*seqAlignIter)->GetSeqStart(1);
@@ -287,7 +291,7 @@ SearchApp::Run(void)
       start = adj_start;
       stop  = adj_stop;
 
-      Rows variants;
+      vector<Variant> variants;
       string line;
       // NB: variant DB positions are 1-indexed.
       string region = getRegion(start + 1, stop);
@@ -300,16 +304,16 @@ SearchApp::Run(void)
         while(getline(ss, cell, '\t')) {
           row.push_back(cell);
         }
-        variants.push_back(row);
+        Variant var(row);
+        variants.push_back(var);
       }
       _variant_fetch_times.push_back(_timer.update_time());
 
-      map<size_t, Row> variants_by_bit;
+      map<size_t, Variant> variants_by_bit;
       Bitmap variant_filter;
-      for (Rows::iterator it = variants.begin(); it != variants.end(); ++it) {
-        size_t idx = atoi((*it)[1].c_str());
-        variant_filter.set(idx);
-        variants_by_bit.insert(make_pair(idx, *it));
+      for (vector<Variant>::iterator it = variants.begin(); it != variants.end(); ++it) {
+        variant_filter.set(it->GetBit());
+        variants_by_bit.insert(make_pair(it->GetBit(), *it));
       }
 
       _timer.update_time();
@@ -329,12 +333,13 @@ SearchApp::Run(void)
       _variant_filter_times.push_back(_timer.update_time());
 
       map<vector<size_t>, boost::shared_ptr<vector<string> > >::iterator it = variant_genotypes.begin();
-      vector<string> fine_blast_targets;
+
+      vector<pair<vector<string>, string> > fine_blast_targets;
+
       for(; it != variant_genotypes.end(); ++it) {
-        Rows variants;
+        vector<Variant> variants;
         for(unsigned int variant_idx = 0; variant_idx < (it->first).size(); ++variant_idx) {
-          Row variant = variants_by_bit[(it->first)[variant_idx]];
-          variants.push_back(variant);
+          variants.push_back(variants_by_bit[(it->first)[variant_idx]]);
         }
         string var_seq;
         getVariantSequence(
@@ -343,14 +348,14 @@ SearchApp::Run(void)
           , adj_start
           , adj_stop
         );
-        fine_blast_targets.push_back(var_seq);
+        fine_blast_targets.push_back(make_pair(*(it->second), var_seq));
       }
 
       // TODO: experiment with batching for fine blast!
       stringstream fine_blast_input_ss;
       for (size_t seq_idx = 0; seq_idx < fine_blast_targets.size(); ++seq_idx) {
         fine_blast_input_ss << ">SEQ" << seq_idx << endl;
-        fine_blast_input_ss << fine_blast_targets[seq_idx] << endl;
+        fine_blast_input_ss << fine_blast_targets[seq_idx].second << endl;
       }
 
       string fine_blast_input_str = fine_blast_input_ss.str();
@@ -379,17 +384,145 @@ SearchApp::Run(void)
         CConstRef<CSeq_align_set> fine_align_set = fine_results[fine_hit_idx];
         const list <CRef<CSeq_align> > &fine_align_list = fine_align_set->Get();
         ITERATE(list<CRef<CSeq_align> >, fine_iter, fine_align_list) {
-          //int sequence_idx = atoi((*fine_iter)->GetSeq_id(1).GetSeqIdString().c_str()) - 1;
+          int sequence_idx = atoi((*fine_iter)->GetSeq_id(1).GetSeqIdString().c_str()) - 1;
           int fine_start   = (*fine_iter)->GetSeqStart(1);
           int fine_stop    = (*fine_iter)->GetSeqStop(1);
-          if ( compare_with_full ) {
-            class_hits.insert(make_pair(adj_start + fine_start, adj_start + fine_stop));
+
+          pair<int, int> hit = make_pair(adj_start + fine_start, adj_start + fine_stop);
+          vector<string> affected_indivs = fine_blast_targets[sequence_idx].first;
+          vector<string>::iterator indiv_it = affected_indivs.begin();
+          for ( ; indiv_it != affected_indivs.end(); ++indiv_it ) {
+            if (indiv_to_hits.find(*indiv_it) == indiv_to_hits.end()) {
+              vector<pair<int, int> > indiv_hits;
+              indiv_to_hits.insert(make_pair(*indiv_it, indiv_hits));
+            }
+            indiv_to_hits[*indiv_it].push_back(hit);
           }
-          // cout << fine_blast_targets[sequence_idx] << endl;
-          cout << adj_start + fine_start << "-" << adj_start + fine_stop << endl;
+
+          if ( _verbose ) {
+            cout << "Hit before translation" << endl;
+            for (int i = 0; i < fine_blast_targets[sequence_idx].first.size(); i++) {
+              cout << fine_blast_targets[sequence_idx].first[i] << ", ";
+            }
+            cout << endl;
+            cout << fine_blast_targets[sequence_idx].second << endl;
+            cout << adj_start + fine_start << "-" << adj_start + fine_stop << endl;
+            cout << fine_start << "-" << fine_stop << endl;
+          }
+
         }
       }
     }
+
+    if ( _verbose ) {
+      cerr << "Found hits for " << indiv_to_hits.size() << " individuals" << endl;
+    }
+
+    // TODO: filter by length modifying variants.
+    // TODO: pull those into memory
+
+    map<string, vector<pair<int, int> > >::iterator hit_trans_it = indiv_to_hits.begin();
+    for (; hit_trans_it != indiv_to_hits.end(); ++hit_trans_it) {
+
+      string indiv = hit_trans_it->first;
+
+      vector<pair<int, int> > hits = hit_trans_it->second;
+      sort(hits.begin(), hits.end());
+
+      int num_hits = hits.size();
+      int reported = 0;
+
+      pair<int, int> first_hit = hits.front();
+      pair<int, int> last_hit  = hits.back();
+      assert(last_hit.first >= first_hit.first);
+
+      int offset = 0, lastMod = 0, lastPos = 0;
+
+      boost::shared_ptr<Bitmap> bits = _genotypes[indiv];
+      vector<size_t> set_bits = bits->toArray();
+
+      int variant_idx = 0;
+
+      string line;
+      string region = getRegion(0, last_hit.first + 100000);
+      vdb.setRegion(region);
+
+      vector<pair<int, int> >::iterator hit_iter = hits.begin();
+
+      bool first_var = true;
+      Variant last_var;
+
+      vector<size_t>::iterator it = set_bits.begin();
+      for (; it != set_bits.end(); ++it) {
+
+        if (hit_iter == hits.end()) {
+          break;
+        }
+
+        // get the next set bit
+        int bit = *it;
+
+        // scan to that variant.
+        while ( variant_idx < bit ) {
+          vdb.getNextLine(line);
+          variant_idx++;
+        }
+
+        // found it!
+        if (variant_idx == bit) {
+
+          // process variant
+          Row row;
+          stringstream ss(line);
+          string cell;
+          while(getline(ss, cell, '\t')) row.push_back(cell);
+          Variant var(row);
+
+          // loop through any variants we have passed, reporting hits with the offset up to this point
+          for(; hit_iter != hits.end() && (*hit_iter).first < var.GetPos(); ++hit_iter) {
+            cerr << offset << endl;
+            cout << "HIT from within variant: " << indiv << "\t" << offset + hit_iter->first  << "\t" << offset + hit_iter->second << endl;
+            if ( compare_with_full ) {
+              class_hits.insert(make_pair(offset + hit_iter->first, offset + hit_iter->second));
+            }
+            reported++;
+          }
+          if (hit_iter == hits.end()) {
+            break;
+          }
+
+          if (first_var || !(last_var.subsumes(var) ) {
+            if (var.GetLengthMod() != 0 ) {
+              cerr << var.GetType() << "\t" << var.GetPos() << "\t" << var.GetLengthMod() << endl;
+            }
+            offset += var.GetLengthMod();
+            last_var = var;
+            first_var = false;
+          }
+
+        } else if (variant_idx < bit) {
+          // fewer variants than bits -- should never happen.
+          assert(false);
+
+        } else {
+          // individual has no more variants -- just print the rest of the hits with the current offset.
+          for (; hit_iter != hits.end(); ++hit_iter) {
+            cout << "HIT: " << indiv << "\t" << (offset + hit_iter->first)  << "\t" << (offset + hit_iter->second) << endl;
+            if ( compare_with_full ) {
+              class_hits.insert(make_pair(offset + hit_iter->first, offset + hit_iter->second));
+            }
+            reported++;
+          }
+        }
+      }
+
+      if (num_hits != reported) {
+        cerr << "Number of hits does not match number reported " << num_hits << " - " << reported << endl;
+        assert(false);
+      }
+
+    }
+
     /*
       Iterate through all full hits for this query.
     */
@@ -407,16 +540,16 @@ SearchApp::Run(void)
             int hit_end   = it->second;
             if (hit_start <= end && hit_end >= start) {
               found_imperfect = true;
-              cerr << "found imperfect: " << hit_start << " " << hit_end << endl;
+              cout << "found imperfect: " << hit_start << " " << hit_end << endl;
               break;
             }
           }
           if (!found_imperfect) {
-            cerr << "full blast: hit at pos " << start << "-" << end << " ";
-            cerr << "Missed. ";
+            cout << "full blast: hit at pos " << start << "-" << end << " ";
+            cout << "Missed. ";
             double evalue;
             (*seqAlign_it)->GetNamedScore(CSeq_align::eScore_EValue, evalue);
-            cerr << evalue << endl;
+            cout << evalue << endl;
             missed_ctr++;
           }
         }
@@ -430,14 +563,18 @@ SearchApp::Run(void)
     reportPerf("Bitwise-and over variant BVs",        _variant_filter_times);
     reportPerf("Initializing and running fine blast", _fine_blast_times);
     if ( compare_with_full ) {
-      cerr << endl;
-      cerr << "Overall accuracy: " << 1-missed_ctr/(double) full_ctr << endl;
-      cerr << "Missed " << missed_ctr << "/" << full_ctr << endl;
+      cout << endl;
+      cout << "Overall accuracy: " << 1-missed_ctr/(double) full_ctr << endl;
+      cout << "Missed " << missed_ctr << "/" << full_ctr << endl;
     }
   }
 
   return SUCCESS;
 }
+
+// bool pairCompareByStartPos(const std::pair<int, int>& firstElem, const std::pair<int, int>& secondElem) {
+//   return firstElem.first < secondElem.first;
+// }
 
 
 CSearchResultSet
@@ -482,7 +619,7 @@ SearchApp::reportPerf(string label, vector<double> &samples) {
 void
 SearchApp::getVariantSequence(
     string &outbuf
-  , Rows &variants
+  , vector<Variant> &variants
   , int ref_start_pos
   , int ref_end_pos
 ) {
@@ -490,8 +627,8 @@ SearchApp::getVariantSequence(
   int last_start = 0, last_end = ref_start_pos;
   bool first = true;
   Variant last_variant;
-  for (Rows::iterator it = variants.begin(); it != variants.end(); ++it) {
-    Variant variant(*it);
+  for (vector<Variant>::iterator it = variants.begin(); it != variants.end(); ++it) {
+    Variant variant = *it;
     if (first) {
       last_variant = variant;
       first = false;
@@ -502,9 +639,8 @@ SearchApp::getVariantSequence(
       if (_verbose) {
         cerr << "Unusual overlapping or out-of-order variants:" << endl;
         cerr << variant.GetPos() << " - " << last_end << endl;
-        for (Rows::iterator inner_it = variants.begin(); inner_it != variants.end(); ++inner_it) {
-          Variant tmp(*inner_it);
-          cerr << tmp << endl;
+        for (vector<Variant>::iterator inner_it = variants.begin(); inner_it != variants.end(); ++inner_it) {
+          cerr << *inner_it << endl;
         }
       }
       continue;

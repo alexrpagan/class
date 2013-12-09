@@ -1,12 +1,12 @@
 import random
 
-REFERENCE   = '/data/apagan/tgc/REFERENCE/chr22.fa'
-NUM_QUERIES = 10000
+REFERENCE   = '/datadisk1/apagan/outbench/ref/chr22.fa'
+NUM_QUERIES = 5000
 MIN_LENGTH  = 5
 MAX_LENGTH  = 200
-SEED        = 0
+SEED        = 1
 
-random.seed(SEED)
+#random.seed(SEED)
 
 BASES = ['A', 'C', 'G', 'T']
 
