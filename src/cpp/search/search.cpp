@@ -79,6 +79,7 @@ namespace {
   const string DB_FLAG            = "db";
   const string PERF_FLAG          = "p";
   const string VERBOSE_FLAG       = "v";
+  const string COMPARE_FLAG       = "c";
 
   const string VDB_BASE_FILENAME  = "vt";
   const string VDB_FILENAME       = "vt.db.gz";
@@ -200,6 +201,8 @@ SearchApp::Init(void)
 
   arg_desc->AddFlag(VERBOSE_FLAG, "Be loquacious.", true);
 
+  arg_desc->AddFlag(COMPARE_FLAG, "Compare results with full database", true);
+
   SetupArgDescriptions(arg_desc.release());
 
 }
@@ -288,21 +291,41 @@ SearchApp::Run(void)
   CBlastInput blast_input(&fasta_input);
   TSeqLocVector query_loc = blast_input.GetAllSeqLocs(scope);
 
-  bool compare_with_full = args[FULL_FLAG].AsString().size() > 0;
+  bool full_db_supplied = args[FULL_FLAG].AsString().size() > 0;
+  bool compare_with_full  = args[COMPARE_FLAG].AsBoolean() && full_db_supplied;
 
   Uint8 full_db_size;
   CSearchResultSet full_results;
-  if ( compare_with_full ) {
-    opts->SetEvalueThreshold(fine_evalue);
-    opts->Validate();
-    full_results = fullBlast(query_loc, opts, &full_db_size);
+  if ( full_db_supplied ) {
+    const CSearchDatabase full_target_db(args[FULL_FLAG].AsString(), CSearchDatabase::eBlastDbIsNucleotide);
+
+    full_db_size = full_target_db.GetSeqDb()->GetTotalLength();
+    if (_verbose) {
+      cerr << "Full db size: " << full_db_size << endl;
+    }
+
+    if ( compare_with_full ) {
+      CRef<IQueryFactory> query_factory(new CObjMgr_QueryFactory(query_loc));
+      opts->SetEvalueThreshold(fine_evalue);
+      opts->Validate();
+
+      _timer.update_time();
+      CLocalBlast blaster(query_factory, opts, full_target_db);
+      cerr << "Time spent initializing full BLAST: " << _timer.update_time() << endl;
+
+      _timer.update_time();
+      full_results = *blaster.Run();
+      cerr << "Full BLAST search time: " << _timer.update_time() << endl;
+    }
   }
 
   int full_ctr = 0, missed_ctr = 0, coarse_hits = 0;
 
   // set evalue-back to coarse
   opts->SetEvalueThreshold(coarse_evalue);
-  opts->SetDbLength(full_db_size);
+  if (full_db_supplied) {
+    opts->SetDbLength(full_db_size);
+  }
   opts->Validate();
   // coarse blast.
   CSearchResultSet results = RunBlast(dbname, query_loc, opts);
