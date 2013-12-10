@@ -40,7 +40,7 @@ if ! [[ -e $OUT/refdb ]]
             -title $CHR || exit 1
 fi
 
-for size in 1 10 20 30 40 50 60 70 80 90 100 110 120 130 140 150
+for size in 1 5 10 15 20 25 30 35 40 45 50
 do
     echo "Preparing database of $size chromosomes"
 
@@ -55,17 +55,17 @@ do
         then
             mkdir $benchdir/raw || exit
             # select some random fasta files
-            fasta_files=`ls $IN/raw/*.fa | sort -R --random-source=/dev/zero | head -n $size`
+            fasta_files=`ls $IN/raw/* | sort -R --random-source=/dev/zero | head -n $size`
             for f in $fasta_files
             do
                 echo "Copying $f"
                 cp $f $benchdir/raw
 
                 echo "Replacing defline with filename"
-                sed -i '1s/.*/>'$(basename $f)'/' $f
+                sed -i '1 s/.*/>'$(basename $f)'/' $f
 
-                # echo "Adding newline at end of each file"
-                # sed -i -e '$a\' $f
+                echo "Adding newline at end of each file"
+                sed -i -e '$a\' $f
 
                 echo #done...
             done
@@ -75,7 +75,7 @@ do
     fi
 
     # concatenate raw fasta files
-    cat $benchdir/raw/*.fa > $benchdir/$COMBINED
+    cat $benchdir/raw/* > $benchdir/$COMBINED
 
     # sanity check
     [[ -e $benchdir/$COMBINED ]] || exit 1
@@ -87,28 +87,30 @@ do
         -dbtype nucl                     \
         -title $CHR-$size || exit 1
 
-    echo "Generating CaBLAST DB"
-    mkdir $benchdir/cablastdb || exit
-    $CABLAST/gen_compressed_db          \
-        $benchdir/cablastdb/uniques.fa  \
-        $benchdir/cablastdb/links.dat   \
-        $benchdir/cablastdb/edits.dat   \
-        smushed < $benchdir/$COMBINED | \
-            tee $benchdir/cablastdb/gencomp_stdout.log
+    if [[ $size < 30 ]];
+        then
+            echo "Generating CaBLAST DB"
+            mkdir $benchdir/cablastdb || exit
+            $CABLAST/gen_compressed_db          \
+                $benchdir/cablastdb/uniques.fa  \
+                $benchdir/cablastdb/links.dat   \
+                $benchdir/cablastdb/edits.dat   \
+                smushed < $benchdir/$COMBINED | \
+                    tee $benchdir/cablastdb/gencomp_stdout.log
 
-    echo "Preparing uniques blast DB"
-    $MAKEBLASTDB -in $benchdir/cablastdb/uniques.fa \
-        -out $benchdir/cablastdb/uniques            \
-        -dbtype nucl                                \
-        -title $CHR-cablast-uniques-$size || exit 1
+            echo "Preparing uniques blast DB"
+            $MAKEBLASTDB -in $benchdir/cablastdb/uniques.fa \
+                -out $benchdir/cablastdb/uniques            \
+                -dbtype nucl                                \
+                -title $CHR-cablast-uniques-$size || exit 1
+    fi
 
     echo "Copying over CLASS DB"
     mkdir $benchdir/classdb
     for f in $fasta_files
         do
-            bvfile=`echo $f | grep -o -e 'NA.*.[12]' -e 'HG.*.[12]' | sed 's/\./-/'`
-            echo $bvfile
-            cp $IN/bv/$bvfile $benchdir/classdb || exit 1
+            bvfile=`echo $f | sed 's/2$/1/' | sed 's/0$/1/'`
+            cp $IN/bv/$(basename $bvfile) $benchdir/classdb || exit 1
     done
     for f in `ls $IN/bv/vt*`
         do
