@@ -62,7 +62,7 @@ namespace {
 
   const unsigned int PUNT_THRESH = 1000;
 
-  const int FUZZ        = 0;
+  const int FUZZ        = 1500;
   const int FRINGE      = 50;
   const int FASTA_WIDTH = 80;
 
@@ -207,7 +207,6 @@ SearchApp::Init(void)
 int
 SearchApp::Run(void)
 {
-
   const CArgs& args = GetArgs();
 
   string dbname  = args[DB_FLAG].AsString();
@@ -231,11 +230,16 @@ SearchApp::Run(void)
   string vdb_file_name = getVDBFilePath(vdbpath).string();
   Tabix vdb(vdb_file_name);
 
+  set<int> variants_to_ignore;
+
   _timer.update_time();
   vector<Variant> variantDB;
   string region = getRegion(0, std::numeric_limits<int>::max());
   vdb.setRegion(region);
   string line;
+  bool first_variant = true;
+  Variant last_var;
+  Bitmap length_modifying_variants;
   while(vdb.getNextLine(line)) {
     Row row;
     stringstream ss(line);
@@ -243,32 +247,26 @@ SearchApp::Run(void)
     while(getline(ss, cell, '\t')) row.push_back(cell);
     Variant var(row);
     variantDB.push_back(var);
+    if(first_variant) {
+      first_variant = false;
+      last_var = var;
+    } else {
+      if (var.GetPos() + 1 < last_var.GetPos() + last_var.GetRef().size()) {
+        variants_to_ignore.insert(var.GetBit());
+      } else {
+        if (var.GetLengthMod() != 0) {
+          length_modifying_variants.set(var.GetBit());
+        }
+        last_var = var;
+      }
+    }
   }
   if( _report_perf ) {
     cerr << "Reading variant DB: " << _timer.update_time() << endl ;
   }
 
-  _timer.update_time();
-  map<string, boost::shared_ptr<Bitmap> > indiv_lenmod_variants;
-  Bitmap length_modifying_variants;
-  for (vector<Variant>::iterator it = variantDB.begin(); it != variantDB.end(); ++it) {
-    if (it->GetLengthMod() != 0) {
-      length_modifying_variants.set(it->GetBit());
-    }
-  }
-  if( _report_perf ) {
-    cerr << "Creating length-modifying variant filter: " << _timer.update_time() << endl ;
-  }
-
-  _timer.update_time();
-  for (Genotypes::iterator it = _genotypes.begin(); it != _genotypes.end(); ++it) {
-    boost::shared_ptr<Bitmap> and_res(new Bitmap());
-    // which length-modifying variants does the indiv have?
-    it->second->logicaland(length_modifying_variants, *and_res);
-    indiv_lenmod_variants.insert(make_pair(it->first, and_res));
-  }
-  if( _report_perf ) {
-    cerr << "Calcluating offsets for each indiv: " << _timer.update_time() << endl ;
+  if (_verbose) {
+    cerr << "Skipping " << variants_to_ignore.size() << " variants "<< endl;
   }
 
   _fastaRef.open(refpath);
@@ -312,8 +310,8 @@ SearchApp::Run(void)
   for (unsigned int query_idx = 0; query_idx < results.GetNumResults(); query_idx++) {
     _curr_query = query_idx;
     if ( _verbose ) {
-      cout << "Processing query: " << query_idx << endl;
-      cerr << "Processing query: " << query_idx << endl;
+      cout << "# Query: " << query_idx << endl;
+      cerr << "# Query: " << query_idx << endl;
     }
 
     CSearchResults &queryResult = results[query_idx];
@@ -450,21 +448,17 @@ SearchApp::Run(void)
           }
 
           if ( _verbose ) {
-            cout << "Hit before translation" << endl;
+            cerr << "Hit before translation" << endl;
             for (int i = 0; i < fine_blast_targets[sequence_idx].first.size(); i++) {
-              cout << fine_blast_targets[sequence_idx].first[i] << ", ";
+              cerr << fine_blast_targets[sequence_idx].first[i] << ", ";
             }
-            cout << endl;
+            cerr << endl;
             //cout << fine_blast_targets[sequence_idx].second << endl;
             //cout << fine_start << "-" << fine_stop << endl;
-            cout << adj_start + fine_start << "-" << adj_start + fine_stop << endl;
+            cerr << adj_start + fine_start << "-" << adj_start + fine_stop << endl;
           }
         }
       }
-    }
-
-    if ( _verbose ) {
-      // cerr << "Found hits for " << indiv_to_hits.size() << " individuals" << endl;
     }
 
     map<string, vector<pair<int, int> > >::iterator hit_trans_it = indiv_to_hits.begin();
@@ -481,56 +475,54 @@ SearchApp::Run(void)
       pair<int, int> last_hit  = hits.back();
       assert(last_hit.first >= first_hit.first);
 
+      // Only loop over length-modifying variants
+      Bitmap and_res;
       boost::shared_ptr<Bitmap> bits = _genotypes[indiv];
-      vector<size_t> set_bits = bits->toArray();
+      bits->logicaland(length_modifying_variants, and_res);
+      vector<size_t> set_bits = and_res.toArray();
 
-      vector<pair<int, int> >::iterator hit_iter = hits.begin();
+      if (_verbose) {
+        cerr << "Looping over " << set_bits.size()
+             << " length modifying variants for " << indiv << endl;
+      }
 
-      bool first_var = true;
       int offset = 0;
-      Variant last_var;
-
+      vector<pair<int, int> >::iterator hit_iter = hits.begin();
       vector<size_t>::iterator it = set_bits.begin();
       for (; it != set_bits.end(); ++it) {
         // get the next set bit
         int bit = *it;
+        assert(!variants_to_ignore.count(bit));
         Variant var = variantDB[bit];
-
         assert(var.GetBit() == bit);
+        assert(var.GetLengthMod() != 0);
         // loop through any variants we have passed, reporting hits with the offset up to this point
         for(; hit_iter != hits.end() && (*hit_iter).first < var.GetPos(); ++hit_iter) {
-          cout << "HIT: " << indiv << "\t" << offset + hit_iter->first  << "\t" << offset + hit_iter->second << "\t"<< offset << endl;
+          int start_with_offset = offset + hit_iter->first;
+          int stop_with_offset  = offset + hit_iter->second;
+          cout << indiv
+               << "\t" << start_with_offset
+               << "\t" << stop_with_offset << endl;
           if ( compare_with_full ) {
-            class_hits.insert(make_pair(offset + hit_iter->first - FUZZ, offset + hit_iter->second + FUZZ));
+            class_hits.insert(make_pair(start_with_offset - FUZZ, stop_with_offset + FUZZ));
           }
           reported++;
         }
         if (hit_iter == hits.end()) {
-          cerr << "Done with hits" << endl;
           break;
         }
-        if (first_var) {
-          first_var = false;
-        } else {
-          if (last_var.subsumes(var)) {
-            cerr << last_var.GetType() << " variant with range " << last_var.GetRef().size()
-                  << " subsumes " << var.GetType()
-                  << " variant with lenmod " << var.GetLengthMod()  << endl;
-            continue;
-          }
-        }
         offset += var.GetLengthMod();
-        last_var = var;
-        if (abs(var.GetLengthMod()) > 0) {
-          cerr << var.GetBit() << "\t" << var.GetPos() << "\t" << var.GetType() << "\t" << var.GetLengthMod() << "\t" << offset << endl;
-        }
-
       }
+
       // individual has no more variants -- just print the rest of the hits with the current offset.
       for (; hit_iter != hits.end(); ++hit_iter) {
-        cout << "HIT after variant: " << indiv << "\t" << (offset + hit_iter->first)  << "\t" << (offset + hit_iter->second) << "\t"<< offset << endl;
+        int start_with_offset = offset + hit_iter->first;
+        int stop_with_offset  = offset + hit_iter->second;
+        cout << indiv
+             << "\t" << start_with_offset
+             << "\t" << stop_with_offset << endl;
         if ( compare_with_full ) {
-          class_hits.insert(make_pair(offset + hit_iter->first - FUZZ, offset + hit_iter->second + FUZZ));
+          class_hits.insert(make_pair(start_with_offset - FUZZ, stop_with_offset + FUZZ));
         }
         reported++;
       }
@@ -540,7 +532,6 @@ SearchApp::Run(void)
     /*
       Iterate through all full hits for this query.
     */
-
     if ( compare_with_full ) {
       int full_query = 0, missed_query = 0;
       const list <CRef<CSeq_align> > &full_seqAlignList = full_results[query_idx].GetSeqAlign()->Get();
@@ -550,19 +541,21 @@ SearchApp::Run(void)
         int end   = (*seqAlign_it)->GetSeqStop(1);
         if (!class_hits.count(make_pair(start, end))) {
           bool found_imperfect = false;
-          // look for hits that aren't quite right
-
-          cout << "full blast: hit at pos " << start << "-" << end << " ";
-          cout << "Missed. ";
-          double evalue;
-          (*seqAlign_it)->GetNamedScore(CSeq_align::eScore_EValue, evalue);
-          cout << evalue << endl;
-
+          if (_verbose) {
+            // look for hits that aren't quite right
+            cerr << "full blast: hit at pos " << start << "-" << end << " ";
+            cerr << "Missed. ";
+            double evalue;
+            (*seqAlign_it)->GetNamedScore(CSeq_align::eScore_EValue, evalue);
+            cerr << evalue << endl;
+          }
           for (set<pair<int, int> >::iterator it = class_hits.begin(); it != class_hits.end(); it++) {
             int hit_start = it->first;
             int hit_end   = it->second;
             if (hit_start <= end && hit_end >= start) {
-              found_imperfect = true;
+              if (((hit_end - FUZZ) - (hit_start + FUZZ)) == end - start) {
+                found_imperfect = true;
+              }
               break;
             }
           }
@@ -574,9 +567,11 @@ SearchApp::Run(void)
       if (full_query > 0) {
         double query_accuracy = 1 - missed_query / (double) full_query;
         if (query_accuracy < .8) {
-          cout << "Bad query: " << query_accuracy << ": " << query_idx
-               << ", " << full_query << " full hits. "
-               << coarse_hits << " coarse hits." << endl;
+          if(_verbose) {
+            cerr << "Bad query: " << query_accuracy << ": " << query_idx
+                 << ", " << full_query << " full hits. "
+                 << coarse_hits << " coarse hits." << endl;
+          }
         }
       }
     }
@@ -588,9 +583,9 @@ SearchApp::Run(void)
     reportPerf("Bitwise-and over variant BVs",        _variant_filter_times);
     reportPerf("Initializing and running fine blast", _fine_blast_times);
     if ( compare_with_full ) {
-      cout << endl;
-      cout << "Overall accuracy: " << 1-missed_ctr/(double) full_ctr << endl;
-      cout << "Missed " << missed_ctr << "/" << full_ctr << endl;
+      cerr << endl;
+      cerr << "Overall accuracy: " << 1-missed_ctr/(double) full_ctr << endl;
+      cerr << "Missed " << missed_ctr << "/" << full_ctr << endl;
     }
   }
 
